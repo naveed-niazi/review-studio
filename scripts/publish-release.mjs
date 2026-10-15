@@ -100,8 +100,14 @@ function publish() {
       `sha256:${digest}`,
       'GitHub asset digest does not match the verified installer',
     );
-    assert.ok(
-      uploaded.assets.some((asset) => asset.name === 'SHA256SUMS' && asset.state === 'uploaded'),
+    assert.equal(uploaded.assets.length, 2, 'Release must contain exactly the verified assets');
+    assert.equal(asset.state, 'uploaded');
+    const checksumAsset = uploaded.assets.find((asset) => asset.name === 'SHA256SUMS');
+    assert.equal(checksumAsset?.state, 'uploaded');
+    assert.equal(
+      checksumAsset.digest,
+      `sha256:${createHash('sha256').update(readFileSync('release/SHA256SUMS')).digest('hex')}`,
+      'GitHub checksum asset digest does not match the verified manifest',
     );
     gh('release', 'edit', tag, '--repo', repository, '--draft=false', '--prerelease');
     console.log(`Published https://github.com/${repository}/releases/tag/${tag}`);

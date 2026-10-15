@@ -10,7 +10,10 @@ on:
       - 'server/**'
       - 'src/**'
       - 'scripts/**'
-      - 'test/desktop-check.mjs'
+      - 'test/**'
+      - 'build/**'
+      - 'index.html'
+      - 'LICENSE'
       - 'package*.json'
       - 'vite.config.js'
   workflow_dispatch:
