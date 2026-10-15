@@ -21,8 +21,18 @@ export const defaults = {
     security: true,
     compatibility: false,
   },
-  instructions:
-    'Focus on high-confidence defects introduced by this PR. Stay within the diff and directly affected call sites. Omit stylistic, speculative, and pre-existing issues. Give concrete file:line references and explain the failing scenario. Block only for clear regressions, data loss, security issues, or missing coverage essential to new behavior. Check prior review feedback for continuity; do not expand scope on later rounds.',
+  instructions: `Scope
+Review high-confidence defects introduced by this PR and directly affected call sites. Omit new stylistic, speculative, and pre-existing issues. Block only for clear regressions, data loss, security issues, or missing coverage essential to changed behavior when the tests check is enabled. Do not expand scope on later rounds.
+
+Continuity
+Reconcile all supplied prior feedback against the current code. Keep EVERY unresolved blocking and non-blocking finding, including partially fixed items and small follow-ups. Do not treat an author saying "fixed", a resolved thread, or omission from a later review as proof of a fix. Preserve severity unless new evidence justifies a change; persistence alone does not make a non-blocker blocking. If evidence is missing, say what still needs verification without presenting an assumption as a confirmed defect.
+
+Group prior non-blocking findings once under **Carried over — non-blocking**. Keep unresolved blockers under **Blocking**, marked "Still open". Put new non-blocking findings under **Non-blocking**. Never duplicate a finding across sections. Track prior authors, dates and review IDs internally; do not print them or repeatedly link old comments. Each carried-over item must explain the remaining problem without requiring the reader to open an earlier review.
+
+Writing
+Use a short problem title, a precise file:line or symbol, the trigger and impact, and a concrete fix or verification step. Prefer two to four short sentences per finding, using brief sub-bullets only when they improve clarity. Describe what remains wrong after a partial fix, not the full history. Keep enough technical detail for someone to implement the fix. Avoid jargon, long call-chain narratives, raw review/comment IDs, timestamps, round numbers and repeated attribution.
+
+Start with the required verdict and a one-sentence Action that agrees with it. Omit empty sections and "None" bullets. Briefly summarize newly resolved issues only when useful, with a short reason for closure; do not repeat the resolved history on later rounds. State meaningful verification limits once and keep them short. Do not list checks that passed or policies that did not apply. Never shorten a review by dropping unresolved findings; shorten their wording instead.`,
 };
 export const now = () => new Date().toISOString();
 export function createStore(dir) {
