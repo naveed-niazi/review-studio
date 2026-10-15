@@ -1,45 +1,71 @@
-# Packaging and releasing
+# Building and releasing
 
-The repository ships source under MIT. Current packaging targets macOS Apple Silicon. The default configuration creates an **unsigned, unnotarized preview build**. Preview DMGs can be downloaded from [GitHub Releases](https://github.com/naveed-niazi/review-studio/releases). These are explicitly marked prerelease; signed stable installers are not yet available.
+Review Studio uses GitHub Actions for build artifacts and public releases. Local packaging remains available for development; maintainers do not need to upload binaries manually.
+
+## Triggers
+
+| Event                                    | Result                                                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- |
+| Pull request                             | CI tests, production frontend build, UI acceptance, and source publication checks       |
+| PR affecting application/packaging files | Additional Mac packaging and packaged lifecycle checks                                  |
+| Push to `main`                           | Tested Apple Silicon installer uploaded as a workflow artifact, retained for seven days |
+| Push of `v<package-version>` tag         | Verified installer published as a GitHub prerelease with checksums and provenance       |
+| Manual workflow dispatch                 | Build artifact only; never publishes a release                                          |
+
+Find development builds in **Actions → macOS build and release → run → Artifacts**. GitHub requires sign-in to download workflow artifacts. Public release downloads are on the repository’s Releases page.
+
+## Release a version
+
+1. Update `package.json` and `package-lock.json` together, using `npm version 1.0.1 --no-git-tag-version` for example. Update versioned download links in the README when preparing the next release.
+2. Open a PR and review the changes. Merge only after relevant CI and packaging checks pass.
+3. Update your checkout and tag the reviewed commit:
+
+   ```sh
+   git switch main
+   git pull --ff-only
+   git tag -a v1.0.1 -m "Review Studio 1.0.1"
+   git push origin v1.0.1
+   ```
+
+4. Follow the **macOS build and release** run. The tag must exactly match the package version and its commit must be reachable from `main`.
+5. Confirm the public release contains the DMG and `SHA256SUMS`, then inspect the installation notes and download links.
+
+The workflow builds on a fresh GitHub-hosted Apple Silicon runner. It runs automated tests, UI acceptance, source checks, production dependency audit, packaging, an isolated desktop lifecycle test, and package inspection. It verifies and mounts the DMG to confirm the packaged app matches the tested archive. Only the installer and checksum file are uploaded; builder logs and configuration are excluded.
+
+The publishing job runs separately with limited release/attestation permissions. It downloads the verified artifact, rechecks the checksum, records GitHub provenance, and stages a draft release. The release becomes public only after GitHub reports the expected installer digest. Build jobs have read-only repository access, checkout credentials are not persisted, and action versions are pinned to full commit hashes. Pull requests and manual dispatches cannot publish releases.
+
+## Verify a download
+
+Download both assets into the same folder:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+gh attestation verify Review-Studio-1.0.0-arm64.dmg --repo naveed-niazi/review-studio
+```
+
+Checksums verify file integrity. Provenance links an artifact to its GitHub workflow and source commit; it is not a security audit or an Apple signature. See [GitHub’s artifact attestation documentation](https://docs.github.com/en/actions/concepts/security/artifact-attestations).
+
+## Recover from a failed run
+
+A failed build publishes nothing. If upload or final publication fails, the release stays a draft. After diagnosing the problem, rerun the failed job; the publisher may replace assets in that unpublished draft. It refuses to replace a public release. Publish a new version for changes to released binaries, and do not move existing version tags.
+
+No personal GitHub token is needed: release jobs use the repository-scoped Actions token. Claude/GitHub user accounts and API keys are not needed for tests or packaging. Do not add production review credentials to this workflow.
+
+## Signing and notarization
+
+Current installers are **unsigned, unnotarized previews** for Apple Silicon Macs on macOS 13+. All automated releases are explicitly marked prerelease. Gatekeeper may block first launch, and login-item registration may be unreliable.
+
+A signed stable release requires an Apple Developer signing identity, removal of the explicit `mac.identity: null` setting, notarization configuration, and protected signing credentials. Signing and notarization are not configured yet. Keep certificates/passwords in protected release secrets or secure local storage, never in Git. Before declaring stable support, validate signing, notarization, Gatekeeper, first-time authentication, encrypted key storage, background behavior, and login startup on a clean Mac.
+
+The known build-tool advisory is recorded in [SECURITY.md](../SECURITY.md). Reassess it before stable distribution. Intel, Windows, and Linux installers require their own validated build and test workflows.
 
 ## Local packaging
 
 ```sh
 npm ci
 npm run package:mac
-```
-
-The `.app` and DMG are written to `release/`, which is ignored by Git. For an unpacked application, use `npm run package:dir`. Start-at-login is available only in the packaged app; on macOS, place it in Applications. Unsigned builds may fail login-item registration.
-
-The optional packaged lifecycle check expects `release/mac-arm64/Review Studio.app`:
-
-```sh
 node test/desktop-check.mjs
+npm run verify:package
 ```
 
-It uses an isolated data directory and fake CLI accounts. It does not invoke real reviews. Quit other development Electron instances if they interfere with launch.
-
-## Before a source release
-
-- Work from a clean checkout. Never package a directory containing runtime data or private repository clones.
-- Run `npm ci`, `npm run format:check`, `npm run check`, and `npm run audit:release`.
-- Review `npm audit` and `npm audit --omit=dev`. Record unresolved issues accurately; the security policy documents the initial build-tool advisory.
-- Regenerate screenshots using `npm run screenshots`; inspect each image. Never use personal accounts or PRs.
-- Inspect `git diff --cached`, the complete tracked file list, and `npm pack --dry-run`. No database, account configuration, response logs, or reviewed source should be present.
-- Confirm README commands from a fresh installation and test first launch with no configured repositories. Defaults must remain paused, auto-queue off, and approval required.
-- Preserve the MIT license and dependency notices. The Vite build emits `dist/THIRD_PARTY_LICENSES.txt` for bundled frontend dependencies and fonts; it is included in the application. The package is marked `private` to prevent accidental npm publication; GitHub source distribution and local builds remain available.
-- Tag a tested commit and write release notes stating supported platforms and remaining limitations.
-
-## Publishing an unsigned preview
-
-Build from the exact release commit using `npm run package:mac`. Run the packaged smoke test and inspect the application archive for private data before uploading. Mount the DMG read-only to verify it contains the tested app and Applications shortcut. Upload only the DMG and a `SHA256SUMS` file, never builder logs or local configuration.
-
-Create a GitHub prerelease against the tested commit. State the architecture, minimum macOS version, CLI prerequisites, unsigned/notarized status, and known limitations. Include installation instructions and the checksum. Do not overwrite a previously published binary under the same version. Signing and notarization checks below apply to a future signed stable release.
-
-## Before distributing signed stable Mac binaries
-
-Configure an Apple Developer signing identity, remove the explicit `mac.identity: null` development setting, and configure notarization in the release environment. Keep certificates, passwords, and credentials in protected CI secrets or local secure storage, never in the repository.
-
-Validate signing/notarization and Gatekeeper on a clean Mac. Test first-time CLI setup, already-authenticated accounts, secure key storage, app termination, background operation, and restart/login registration. Do not describe a development DMG as signed or notarized.
-
-The committed CI builds/tests source; it does not publish binaries, use production credentials, or post GitHub reviews. Binary publication is a separate, deliberate maintainer action after the appropriate checks above.
+Outputs live under the ignored `release/` directory. `package:mac` explicitly disables electron-builder’s automatic publishing. `package:dir` creates an unpacked app. The Vite build includes frontend and font notices in `dist/THIRD_PARTY_LICENSES.txt`; retain those and the MIT license in distributions.
