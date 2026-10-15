@@ -34,7 +34,7 @@
     "@vitejs/plugin-react": "^4.5.0",
     "electron": "^44.7.2",
     "electron-builder": "^26.15.3",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.55.0",
     "prettier": "^3.9.10",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
