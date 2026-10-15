@@ -313,6 +313,7 @@ function App() {
         <a
           className="brand"
           href="#"
+          aria-label="Review Studio home"
           onClick={(e) => {
             e.preventDefault();
             navigate('inbox');
@@ -333,6 +334,9 @@ function App() {
           {nav.map(([id, title, Icon, count]) => (
             <button
               key={id}
+              aria-label={title}
+              title={title}
+              aria-current={page === id ? 'page' : undefined}
               className={page === id ? 'nav-item selected' : 'nav-item'}
               onClick={() => navigate(id)}
             >
@@ -359,6 +363,9 @@ function App() {
             </div>
           </div>
           <button
+            aria-label="Settings & connections"
+            title="Settings & connections"
+            aria-current={page === 'settings' ? 'page' : undefined}
             className={page === 'settings' ? 'nav-item selected' : 'nav-item'}
             onClick={() => navigate('settings')}
           >
