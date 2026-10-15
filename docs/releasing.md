@@ -47,7 +47,7 @@ Checksums verify file integrity. Provenance links an artifact to its GitHub work
 
 ## Recover from a failed run
 
-A failed build publishes nothing. If upload or final publication fails, the release stays a draft. After diagnosing the problem, rerun the failed job; the publisher may replace assets in that unpublished draft. It refuses to replace a public release. Publish a new version for changes to released binaries, and do not move existing version tags.
+A failed build publishes nothing. If upload or final publication fails, the release stays a draft. After diagnosing the problem, rerun the failed job; the publisher may replace assets in that unpublished draft. It refuses to replace a public release. This repository also enables [GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases), which locks published assets and their version tags. Enable that setting under **Settings → General → Releases** when adopting this workflow in another repository. Publish a new version for changes to released binaries, and do not move existing version tags.
 
 No personal GitHub token is needed: release jobs use the repository-scoped Actions token. Claude/GitHub user accounts and API keys are not needed for tests or packaging. Do not add production review credentials to this workflow.
 
