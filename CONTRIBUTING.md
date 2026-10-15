@@ -59,6 +59,14 @@ See [architecture](docs/architecture.md) for component boundaries and extension 
 
 Do not commit databases, `.env` files, authentication output, API keys, source from reviewed repositories, local paths, generated builds, or runtime logs. Dependencies should have a clear purpose and compatible licensing. Keep the lockfile in sync with package changes.
 
+## Collaboration and merging
+
+Anyone can fork the public repository and propose a pull request; write access is not needed to contribute. Use [Discussions](https://github.com/naveed-niazi/review-studio/discussions) for ideas, questions, and early design conversations. Use issues for actionable bugs and feature requests.
+
+`main` requires a pull request, a passing `checks` CI job against the latest base branch, and resolved review conversations. Force-pushes and branch deletion are blocked, including for administrators. Pull requests merge by squash, and merged source branches are deleted automatically. CODEOWNERS requests review from the maintainer.
+
+The repository currently has one maintainer, so a second person's approval is not mandatory. Outside contributors cannot merge their own PRs without being granted write access. Before expanding the team with write-capable collaborators, enable at least one required approval; the maintainer controls access through repository settings. Never share account credentials to collaborate.
+
 ## Community expectations
 
 Be respectful, discuss the code rather than the person, and avoid sharing anyone’s private information. Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md). Ordinary bugs and feature requests belong in public issues with sensitive details removed.

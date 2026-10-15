@@ -24,9 +24,21 @@ _All screenshots use fictional repositories and isolated demo data._
 
 Review Studio uses Claude Code for analysis and GitHub CLI for repository access. There is no Review Studio account or hosted backend to configure. Review content is sent to Anthropic through Claude Code; this is **not an offline model**.
 
-## Quick start
+## Download for Mac
 
-The current desktop target is **macOS**. The source and Apple Silicon packaging workflow are available here; a signed, notarized installer is not yet provided. Browser/server mode is also available. Windows and Linux desktop support has not been validated.
+[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.0.0/Review-Studio-1.0.0-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.0.0)
+
+Requires an Apple Silicon Mac (M-series), macOS 13 or newer, Git, GitHub CLI, and Claude Code. Node.js is bundled in the app; you do not need to install Node.js or clone this repository to use the download. Intel Macs, Windows, and Linux installers are not included.
+
+1. Download the DMG, open it, and drag **Review Studio** into **Applications**.
+2. Open the app. It detects existing GitHub CLI and Claude Code sign-ins. Install missing CLIs using the links in Settings, then connect your accounts.
+3. Add a repository, queue a PR, and start the runner. Reviews require approval before publishing by default.
+
+This initial download is an **unsigned, unnotarized preview**. macOS may block its first launch. If you trust this download, follow [Apple’s instructions for opening an unidentified developer’s app](https://support.apple.com/en-ie/102445), using **System Settings → Privacy & Security → Open Anyway** after attempting to open it. Start-at-login registration may not work reliably with unsigned builds.
+
+## Run from source
+
+The current desktop target is **macOS**. Browser/server mode is also available. Windows and Linux desktop support has not been validated.
 
 ### 1. Install the prerequisites
 

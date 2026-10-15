@@ -1,6 +1,6 @@
 # Packaging and releasing
 
-The repository ships source under MIT. Current packaging targets macOS Apple Silicon. The default configuration creates an **unsigned development build**; it does not provide a signed/notarized public installer.
+The repository ships source under MIT. Current packaging targets macOS Apple Silicon. The default configuration creates an **unsigned, unnotarized preview build**. Preview DMGs can be downloaded from [GitHub Releases](https://github.com/naveed-niazi/review-studio/releases). These are explicitly marked prerelease; signed stable installers are not yet available.
 
 ## Local packaging
 
@@ -30,10 +30,16 @@ It uses an isolated data directory and fake CLI accounts. It does not invoke rea
 - Preserve the MIT license and dependency notices. The Vite build emits `dist/THIRD_PARTY_LICENSES.txt` for bundled frontend dependencies and fonts; it is included in the application. The package is marked `private` to prevent accidental npm publication; GitHub source distribution and local builds remain available.
 - Tag a tested commit and write release notes stating supported platforms and remaining limitations.
 
-## Before distributing Mac binaries
+## Publishing an unsigned preview
+
+Build from the exact release commit using `npm run package:mac`. Run the packaged smoke test and inspect the application archive for private data before uploading. Mount the DMG read-only to verify it contains the tested app and Applications shortcut. Upload only the DMG and a `SHA256SUMS` file, never builder logs or local configuration.
+
+Create a GitHub prerelease against the tested commit. State the architecture, minimum macOS version, CLI prerequisites, unsigned/notarized status, and known limitations. Include installation instructions and the checksum. Do not overwrite a previously published binary under the same version. Signing and notarization checks below apply to a future signed stable release.
+
+## Before distributing signed stable Mac binaries
 
 Configure an Apple Developer signing identity, remove the explicit `mac.identity: null` development setting, and configure notarization in the release environment. Keep certificates, passwords, and credentials in protected CI secrets or local secure storage, never in the repository.
 
 Validate signing/notarization and Gatekeeper on a clean Mac. Test first-time CLI setup, already-authenticated accounts, secure key storage, app termination, background operation, and restart/login registration. Do not describe a development DMG as signed or notarized.
 
-The committed CI builds/tests source; it does not publish binaries, use production credentials, or post GitHub reviews. Binary publication should be a separate, deliberate maintainer workflow after these checks.
+The committed CI builds/tests source; it does not publish binaries, use production credentials, or post GitHub reviews. Binary publication is a separate, deliberate maintainer action after the appropriate checks above.
