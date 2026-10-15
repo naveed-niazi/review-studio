@@ -99,7 +99,8 @@
           "path": "/Applications"
         }
       ]
-    }
+    },
+    "artifactName": "Review-Studio-${version}-${arch}.${ext}"
   },
   "repository": {
     "type": "git",
