@@ -80,8 +80,22 @@ try {
   await page.getByText('src/auth.ts', { exact: true }).click();
   await page.getByText('+new', { exact: false }).waitFor();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await page.setViewportSize({ width: 820, height: 900 });
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  for (const viewport of [
+    { width: 1024, height: 600 },
+    { width: 820, height: 600 },
+  ]) {
+    await page.setViewportSize(viewport);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    await page.getByRole('button', { name: 'Settings & connections', exact: true }).click();
+    await page.getByRole('heading', { name: 'Publishing policy' }).waitFor();
+    await page.screenshot({ path: `build/settings-${viewport.width}-preview.png` });
+    const settingsBounds = await page
+      .getByRole('button', { name: 'Settings & connections', exact: true })
+      .boundingBox();
+    assert.ok(settingsBounds.y >= 0 && settingsBounds.y + settingsBounds.height <= viewport.height);
+    await page.getByRole('button', { name: 'Pull requests', exact: true }).click();
+    await page.getByRole('heading', { name: 'Good code. Clear reviews.' }).waitFor();
+  }
   assert.deepEqual(errors, []);
   console.log(
     'UI acceptance passed: inbox, queue, prompts, settings, repository picker, validation errors, changed-file preview, responsive layout.',
