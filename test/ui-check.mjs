@@ -1,0 +1,92 @@
+// Isolated UI acceptance test. Uses fake CLI executables, never production accounts.
+import assert from 'node:assert/strict';
+import { chromium } from '@playwright/test';
+process.env.REVIEW_STUDIO_FIXTURE_ONLY = '1';
+const { startFixture } = await import('./http.test.js');
+const fixture = await startFixture();
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
+});
+try {
+  const page = await browser.newPage({
+    viewport: { width: 1440, height: 1000 },
+    deviceScaleFactor: 1,
+  });
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(fixture.url);
+  await page.getByRole('heading', { name: 'Good code. Clear reviews.' }).waitFor();
+  await page.getByText('Add session expiry handling to authentication').first().waitFor();
+  await page.locator('.branch-tag').first().waitFor();
+  assert.equal(await page.locator('.branch-tag').first().innerText(), 'into main');
+  await page.screenshot({
+    path: 'build/workspace-preview.png',
+    fullPage: true,
+  });
+  await page.getByRole('button', { name: 'Queue', exact: true }).first().click();
+  await page.getByRole('status').filter({ hasText: 'Added to the review queue' }).waitFor();
+  await page.getByRole('button', { name: 'Review queue', exact: false }).first().click();
+  await page.getByRole('heading', { name: 'Runner is paused' }).waitFor();
+  assert.equal(await page.locator('.queue-row').count(), 1);
+  await page.getByRole('button', { name: 'Prompts & rules', exact: true }).click();
+  await page.getByRole('button', { name: 'New prompt', exact: true }).click();
+  await page.getByLabel('Prompt name').fill('Release readiness');
+  await page
+    .getByLabel('Instructions', { exact: true })
+    .fill('Check rollback behavior and compatibility.');
+  await page.getByRole('button', { name: 'Save prompt library' }).click();
+  await page.getByRole('status').filter({ hasText: 'Prompt library saved' }).waitFor();
+  await page.getByRole('button', { name: 'Settings & connections', exact: true }).click();
+  await page.getByRole('heading', { name: 'Publishing policy' }).waitFor();
+  await page.getByText('Publish automatically', { exact: true }).click();
+  await page.getByText('Analytics accompany feature changes', { exact: true }).click();
+  await page.getByLabel('Parallel reviews').fill('3');
+  await page.getByLabel('Sync interval (minutes)').fill('11');
+  await page.getByLabel('Age measured from').selectOption('commit');
+  await page.getByRole('button', { name: 'Save workflow settings' }).click();
+  await page.getByRole('status').filter({ hasText: 'Workflow settings saved' }).waitFor();
+  const state = await (await page.request.get(fixture.url + '/api/state')).json();
+  assert.equal(state.settings.publishPolicy, 'automatic');
+  assert.equal(state.settings.checks.analytics, true);
+  assert.equal(state.settings.concurrency, 3);
+  assert.equal(state.settings.syncMinutes, 11);
+  assert.equal(state.settings.ageBasis, 'commit');
+  assert.equal(state.templates[0].name, 'Release readiness');
+  await page.getByRole('button', { name: 'Repositories', exact: true }).click();
+  await page.getByRole('button', { name: 'Configure', exact: false }).first().click();
+  await page.getByLabel('Repository review rules').fill('Preserve the API contract.');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  // The fake fixture is not a real git clone, so repository validation should fail visibly.
+  await page.getByRole('status').filter({ hasText: 'git exited' }).waitFor();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Add repository', exact: true }).click();
+  await page.getByRole('button', { name: 'Browse repositories', exact: true }).click();
+  await page.getByRole('button', { name: /acme\/new-project/ }).click();
+  assert.equal(
+    await page.getByLabel('GitHub repository', { exact: true }).inputValue(),
+    'acme/new-project',
+  );
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Pull requests', exact: false }).first().click();
+  await page.getByRole('button', { name: 'View', exact: true }).first().click();
+  await page.getByText('Current branches', { exact: true }).waitFor();
+  await page
+    .locator('.branch-summary')
+    .getByText('feature/session-expiry', { exact: true })
+    .waitFor();
+  await page.getByRole('button', { name: /Changed files/ }).click();
+  await page.getByText('src/auth.ts', { exact: true }).waitFor();
+  await page.getByText('src/auth.ts', { exact: true }).click();
+  await page.getByText('+new', { exact: false }).waitFor();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.setViewportSize({ width: 820, height: 900 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  assert.deepEqual(errors, []);
+  console.log(
+    'UI acceptance passed: inbox, queue, prompts, settings, repository picker, validation errors, changed-file preview, responsive layout.',
+  );
+} finally {
+  await browser.close();
+  await fixture.stop();
+}

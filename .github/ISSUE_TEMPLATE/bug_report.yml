@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem with Review Studio.
+body:
+  - type: markdown
+    attributes:
+      value: Please use fictional repositories and redact account details, source, paths, and credentials. Report security issues through SECURITY.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include expected behavior and the actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: App commit/version, OS, Node, GitHub CLI, Claude Code versions, and desktop or browser mode. Do not include authentication output.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted error or demo screenshot
+      description: Do not upload your database or raw review logs.
