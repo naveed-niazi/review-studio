@@ -17,22 +17,23 @@ Electron shell: local engine lifecycle, menu bar, login preference,
 folder picker, and OS-backed API-key storage.
 ```
 
-| Location                 | Responsibility                                                          |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `server/index.js`        | Loopback API, request validation, connections, process lifecycle        |
-| `server/store.js`        | Schema, safe defaults, durable jobs, queue ordering, settings snapshots |
-| `server/engine.js`       | PR discovery, worktrees, prompts, review output validation, publishing  |
-| `server/process.js`      | Subprocess execution, cancellation, timeouts, repository parsing        |
-| `server/rules.js`        | Built-in checks and validation                                          |
-| `src/main.jsx`           | Workspace pages, queue, repository forms, review details, settings      |
-| `src/styles.css`         | UI tokens, layouts, responsive behavior                                 |
-| `desktop/main.cjs`       | Sandboxed window, engine process, tray, secure credentials, login items |
-| `desktop/preload.cjs`    | Narrow renderer-to-desktop bridge                                       |
-| `test/core.test.js`      | Store/engine tests with disposable Git repositories                     |
-| `test/http.test.js`      | HTTP isolation/security tests and shared fake-CLI fixture               |
-| `test/ui-check.mjs`      | End-to-end browser acceptance                                           |
-| `test/desktop-check.mjs` | Packaged Mac lifecycle smoke test with isolated fake accounts           |
-| `scripts/`               | Setup diagnostics, demo screenshots, publication hygiene                |
+| Location                 | Responsibility                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `server/index.js`        | Loopback API, request validation, connections, process lifecycle                       |
+| `server/store.js`        | Schema, safe defaults, durable jobs, queue ordering, settings snapshots                |
+| `server/engine.js`       | PR discovery, worktrees, prompts, review output validation, publishing                 |
+| `server/connections.js`  | Failure classification, persisted recovery state, connectivity diagnostics and backoff |
+| `server/process.js`      | Subprocess execution, cancellation, timeouts, repository parsing                       |
+| `server/rules.js`        | Built-in checks and validation                                                         |
+| `src/main.jsx`           | Workspace pages, queue, repository forms, review details, settings                     |
+| `src/styles.css`         | UI tokens, layouts, responsive behavior                                                |
+| `desktop/main.cjs`       | Sandboxed window, engine process, tray, secure credentials, login items                |
+| `desktop/preload.cjs`    | Narrow renderer-to-desktop bridge                                                      |
+| `test/core.test.js`      | Store/engine tests with disposable Git repositories                                    |
+| `test/http.test.js`      | HTTP isolation/security tests and shared fake-CLI fixture                              |
+| `test/ui-check.mjs`      | End-to-end browser acceptance                                                          |
+| `test/desktop-check.mjs` | Packaged Mac lifecycle smoke test with isolated fake accounts                          |
+| `scripts/`               | Setup diagnostics, demo screenshots, publication hygiene                               |
 
 ## Review lifecycle
 

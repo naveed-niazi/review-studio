@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { createStore, defaults, now } from './store.js';
 import { validateChecks } from './rules.js';
 import { Engine } from './engine.js';
+import { ConnectionMonitor } from './connections.js';
 import { run, parsePR, remoteRepo, abortAllProcesses, isRepository } from './process.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -56,7 +57,21 @@ function notify() {
     for (const client of clients) client.write('data: changed\n\n');
   }, 350);
 }
+const connections = new ConnectionMonitor({
+  env: () => (apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+  notify,
+  event: (level, message) => store.event(level, message),
+  saved: store.get('connectionRecovery') || {},
+  persist: (value) => store.set('connectionRecovery', value),
+});
 const engine = new Engine(store, {
+  canRun: () => connections.ready(),
+  beforeGithub: () => connections.assertRequestAllowed('github'),
+  canSync: () => connections.snapshot().github.ok,
+  reportFailure: (error, provider, retryAt) => {
+    connections.report(error, provider, retryAt);
+    healthCache = { ...connections.snapshot(), apiKeySet: !!apiKey };
+  },
   notify,
   env: () => (apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
 });
@@ -103,39 +118,8 @@ const boolean = (value) => {
   if (typeof value !== 'boolean') throw new Error('Expected true or false.');
   return value;
 };
-async function health() {
-  const check = async (cmd, args, env) => {
-    try {
-      return {
-        ok: true,
-        output: await run(cmd, args, { timeout: 15000, env }),
-      };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  };
-  const [github, claude, git] = await Promise.all([
-    check('gh', ['api', 'user', '--jq', '.login']),
-    check('claude', ['auth', 'status'], apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
-    check('git', ['--version']),
-  ]);
-  if (claude.ok) {
-    try {
-      const c = JSON.parse(claude.output);
-      claude.ok = !!c.loggedIn;
-      claude.output = [c.email, c.authMethod].filter(Boolean).join(' · ') || 'Claude account';
-    } catch {
-      claude.ok = false;
-      claude.error = 'Unrecognized Claude authentication status. Update Claude Code.';
-    }
-  }
-  healthCache = {
-    github,
-    claude,
-    git,
-    apiKeySet: !!apiKey,
-    checkedAt: now(),
-  };
+async function health(options) {
+  healthCache = { ...(await connections.refresh(options)), apiKeySet: !!apiKey };
   return healthCache;
 }
 app.get('/api/session', (_req, res) => res.json({ token }));
@@ -165,7 +149,7 @@ app.get('/api/state', (_req, res) =>
       .all(),
     jobs: store.db
       .prepare(
-        `SELECT j.id,j.pr_id,j.sha,j.status,j.position,j.instructions,j.policy,j.model,j.effort,j.created_at,j.started_at,j.finished_at,j.phase,j.error,j.published_url,j.cost,p.repo,p.number,p.title,p.url,p.author,p.base_branch,p.head_branch,p.sha AS current_sha FROM jobs j JOIN prs p ON p.id=j.pr_id WHERE j.status IN ('queued','running','publishing') OR j.id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500) ORDER BY j.created_at DESC`,
+        `SELECT j.id,j.pr_id,j.sha,j.status,j.position,j.instructions,j.policy,j.model,j.effort,j.created_at,j.started_at,j.finished_at,j.phase,j.error,j.published_url,j.cost,j.retry_count,j.retry_at,j.failure_kind,j.failure_provider,p.repo,p.number,p.title,p.url,p.author,p.base_branch,p.head_branch,p.sha AS current_sha FROM jobs j JOIN prs p ON p.id=j.pr_id WHERE j.status IN ('queued','running','publishing') OR j.id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500) ORDER BY j.created_at DESC`,
       )
       .all(),
     events: store.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 120').all(),
@@ -179,7 +163,7 @@ app.get('/api/state', (_req, res) =>
 );
 app.get(
   '/api/health',
-  wrap(async (_req, res) => res.json(await health())),
+  wrap(async (_req, res) => res.json(await health({ force: true, retryAccount: true }))),
 );
 app.post('/api/sync', (_req, res) => {
   void engine.sync().catch((e) => engine.log('error', e.message));
@@ -212,11 +196,7 @@ app.patch(
       if (!validators[key]) throw new Error('Unknown setting.');
       validators[key](value);
     }
-    if (req.body.paused === false) {
-      const h = await health();
-      if (!h.github.ok || !h.claude.ok || !h.git.ok)
-        throw new Error('Connect GitHub and Claude Code, and install Git before starting reviews.');
-    }
+    if (req.body.paused === false) await health({ force: true, retryAccount: true });
     store.transaction(() => {
       for (const [key, value] of entries) store.set(key, value);
     });
@@ -478,6 +458,7 @@ app.post(
       )
     )
       throw new Error('This review cannot be retried yet.');
+    await health({ force: true, retryAccount: true });
     engine.upsert(job.repo, await engine.fetchPR(job.repo, job.number));
     const id = store.enqueue(job.pr_id, job.instructions);
     notify();
@@ -571,7 +552,7 @@ app.post(
     child.on('close', (code) => {
       clearTimeout(session.timer);
       session.status = code === 0 ? 'complete' : 'failed';
-      void health().then(notify);
+      void health({ force: true, retryAccount: true }).then(notify);
     });
     session.timer = setTimeout(() => {
       child.kill('SIGTERM');
@@ -602,9 +583,13 @@ const server = app.listen(port, '127.0.0.1', () => {
   console.log(`Review Studio is ready at ${address}`);
   process.parentPort?.postMessage({ type: 'ready', url: address });
   process.send?.({ type: 'ready', url: address });
-  void health().then(notify);
-  if (store.db.prepare('SELECT COUNT(*) AS n FROM repos').get().n)
-    void engine.sync().catch((e) => engine.log('error', e.message));
+  void health()
+    .then(async (status) => {
+      notify();
+      if (status.github.ok && store.db.prepare('SELECT COUNT(*) AS n FROM repos').get().n)
+        await engine.sync();
+    })
+    .catch((e) => engine.log('error', e.message));
 });
 server.on('error', (e) => {
   console.error(e.message);
@@ -615,9 +600,10 @@ const ticker = setInterval(async () => {
   if (ticking) return;
   ticking = true;
   try {
-    if (healthCache && healthCache.github.ok && healthCache.claude.ok) await engine.tick();
+    if (connections.ready()) await engine.tick();
     if (
       !engine.syncing &&
+      healthCache?.github.ok &&
       Date.now() - new Date(store.get('lastSync') || 0).getTime() > store.get('syncMinutes') * 60000
     )
       void engine.sync().catch((e) => engine.log('error', e.message));
@@ -626,16 +612,8 @@ const ticker = setInterval(async () => {
   }
 }, 1500);
 const healthTimer = setInterval(() => {
-  void health().then((h) => {
-    if (!h.github.ok || !h.claude.ok) {
-      if (!store.get('paused')) {
-        store.set('paused', true);
-        engine.log('warning', 'Runner paused: check connections in Settings.');
-      }
-    }
-    notify();
-  });
-}, 180000);
+  void health().catch((error) => engine.log('error', `Connection check failed: ${error.message}`));
+}, 1500);
 let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
@@ -643,6 +621,7 @@ const shutdown = async () => {
   engine.closing = true;
   clearInterval(ticker);
   clearInterval(healthTimer);
+  connections.close();
   authSession?.child.kill('SIGTERM');
   for (const c of clients) c.end();
   server.close();
@@ -656,6 +635,6 @@ process.parentPort?.on('message', (event) => {
   if (event.data?.type === 'shutdown') void shutdown();
   if (event.data?.type === 'api-key') {
     apiKey = event.data.value;
-    void health().then(notify);
+    void health({ force: true, retryAccount: true }).then(notify);
   }
 });

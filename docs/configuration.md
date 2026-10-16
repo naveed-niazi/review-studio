@@ -24,7 +24,7 @@ The desktop app discovers common Homebrew, local-bin, nvm, Volta, asdf, and mise
 | Tests / security checks          | On                | Inherit, on, or off per repository                                    |
 | Analytics / compatibility checks | Off               | Inherit, on, or off per repository                                    |
 
-Automatic discovery skips drafts and commits with an existing review attempt. Failed reviews need a manual retry. Each sync loads up to 500 open PRs per repository and reports if that limit is reached. Older or specific PRs can be added by URL. The interface includes active work and the most recent 500 review jobs.
+Automatic discovery skips drafts and commits with an existing review attempt. Temporary connection, service and rate-limit failures retry automatically up to three times after the initial review attempt. Other failures need a manual retry. Each sync loads up to 500 open PRs per repository and reports if that limit is reached. Older or specific PRs can be added by URL. The interface includes active work and the most recent 500 review jobs.
 
 Both **Start runner** and automatic queueing must be enabled for unattended discovery and review. Automatic publication is a separate opt-in. Increasing concurrency consumes more of your Claude quota and machine resources.
 
@@ -66,6 +66,18 @@ Disconnecting a repository preserves its history. Only clones in the app-managed
 Closing the desktop window keeps the engine in the menu bar by default. **Quit Review Studio** stops it. Interrupted jobs remain visible for retry; publication is never blindly repeated after interruption.
 
 Start at login is opt-in and available only in the packaged application. On macOS, move the app to Applications first. Unsigned development builds may not register reliably; registration failures are shown. A paused runner remains paused across restarts.
+
+## Connection recovery and retries
+
+A manual pause is saved until you choose **Start runner**. Connection failures use a separate **Waiting for connections** state; they never silently turn on the manual pause. Eligible queued reviews continue after connection checks recover, unless you paused them.
+
+The app distinguishes explicit API service errors, rate limits, expired credentials, account/spending limits, local routing failures, DNS failures and uncertain transport interruptions. An EOF or timeout alone does not prove your internet is down. When a connection check encounters a transport error, two unauthenticated endpoint probes help explain whether either service is reachable. Settings shows the category, diagnosis and next check time.
+
+Connection checks normally run every three minutes. On failure they back off from 15 seconds (60 seconds for rate limits) to five minutes, with a small random delay. A longer `Retry-After`, when exposed by the CLI, takes precedence. Retry deadlines survive restarting the app, and **Check connections** cannot bypass a known provider cooldown.
+
+A transient review failure retains its original queue position, commit and configuration, with up to three automatic retries using separate worktrees. Cancel the queued job to stop its retry. Repeated attempts may consume additional Claude quota. Each completed CLI response is retained per attempt. Invalid review output, changed/closed PRs, permission errors, review timeouts and account failures require manual attention. After fixing an API credential or billing problem, use **Check connections** and retry the affected failed job. Claude's local login status alone cannot verify that a credit balance or API credential has been repaired.
+
+A failed publishing request keeps the completed review locally and requires **Retry publishing**. The app checks for its existing publication marker first because a connection may fail after GitHub has already accepted a comment. It never blindly repeats a write or reruns the review to publish it.
 
 ## Troubleshooting
 

@@ -73,6 +73,47 @@ const labels = {
   publishing: 'Publishing',
   publish_failed: 'Publish failed',
 };
+const connectionLabels = {
+  local_network: 'Network unavailable',
+  dns: 'DNS problem',
+  connection: 'Connection interrupted',
+  service: 'Service unavailable',
+  rate_limit: 'Rate limited',
+  authentication: 'Sign-in needed',
+  billing: 'Account limit',
+  configuration: 'Setup needed',
+  permission: 'Access denied',
+  unknown: 'Check failed',
+};
+function nextCheck(value) {
+  return value
+    ? new Date(value).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : 'shortly';
+}
+function ConnectionProblem({ entry }) {
+  return (
+    <div className="connection-problem">
+      <b>
+        {connectionLabels[entry?.issue?.kind] ||
+          (entry?.checking ? 'Checking connections…' : 'Connection check pending')}
+      </b>
+      {entry?.error && <p>{entry.error}</p>}
+      {entry?.issue?.diagnosis && <p>{entry.issue.diagnosis}</p>}
+      {entry?.nextCheckAt && (
+        <small>
+          Next connection check: {nextCheck(entry.nextCheckAt)}.{' '}
+          {entry.actionRequired
+            ? 'Account or setup changes may be needed before reviews can continue.'
+            : 'Recovery is automatic; a manual pause remains paused.'}
+        </small>
+      )}
+    </div>
+  );
+}
 function relative(value) {
   if (!value) return 'Not yet';
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(value)) / 60000));
@@ -247,6 +288,10 @@ function App() {
       </div>
     );
   const { settings, prs, jobs, repos, health } = state;
+  const connectionReady = health && ['github', 'claude', 'git'].every((key) => health[key]?.ok);
+  const connectionProblems = health
+    ? ['github', 'claude', 'git'].filter((key) => !health[key]?.ok)
+    : [];
   const queued = jobs.filter((j) => j.status === 'queued').sort((a, b) => a.position - b.position),
     running = jobs.filter((j) => ['running', 'publishing'].includes(j.status)),
     ready = jobs.filter((j) => j.status === 'awaiting_approval'),
@@ -404,15 +449,16 @@ function App() {
           </div>
         </header>
         <div className="content">
-          {(!health?.github?.ok || !health?.claude?.ok) && health && (
+          {!connectionReady && health && (
             <div className="banner warning">
               <CircleAlert size={18} />
-              <span>
-                <b>Let’s connect your tools.</b> {health.github.ok ? 'GitHub is ready. ' : ''}
-                {health.claude.ok ? 'Claude is ready. ' : ''}Finish setup to start reviewing.
-              </span>
+              <div className="connection-problems">
+                {connectionProblems.map((key) => (
+                  <ConnectionProblem key={key} entry={health[key]} />
+                ))}
+              </div>
               <Button onClick={() => navigate('settings')}>
-                Set up connections <ArrowUpRight size={14} />
+                Connection details <ArrowUpRight size={14} />
               </Button>
             </div>
           )}
@@ -674,15 +720,25 @@ function App() {
             <>
               <div className="runner-bar">
                 <div>
-                  <span className={`runner-indicator ${settings.paused ? 'paused' : ''}`}>
+                  <span
+                    className={`runner-indicator ${settings.paused || !connectionReady ? 'paused' : ''}`}
+                  >
                     <Zap size={20} />
                   </span>
                   <div>
-                    <h3>{settings.paused ? 'Runner is paused' : 'Runner is active'}</h3>
+                    <h3>
+                      {settings.paused
+                        ? 'Runner is paused'
+                        : !connectionReady
+                          ? 'Waiting for connections'
+                          : 'Runner is active'}
+                    </h3>
                     <p>
                       {settings.paused
                         ? 'Your queue is saved. Start when you’re ready.'
-                        : `${running.length} reviews in progress. Up to ${settings.concurrency} at a time.`}
+                        : !connectionReady
+                          ? 'Your queue is saved. Connection checks retry automatically; review failures show their own retry status.'
+                          : `${running.length} reviews in progress. Up to ${settings.concurrency} at a time.`}
                     </p>
                   </div>
                 </div>
@@ -739,7 +795,7 @@ function App() {
                     <h2>
                       Up next <span className="count">{queued.length}</span>
                     </h2>
-                    <p>Drag to reorder, or use the arrows. The first item runs next.</p>
+                    <p>Drag to reorder, or use the arrows. Eligible reviews run in this order.</p>
                   </div>
                   <span className="subtle">
                     <GripVertical size={15} /> Your order, your workflow
@@ -776,6 +832,12 @@ function App() {
                           <span>·</span>{' '}
                           {j.policy === 'automatic' ? 'Auto-publish' : 'Approval required'}
                         </p>
+                        {j.retry_at && (
+                          <p className="retry-note">
+                            {connectionLabels[j.failure_kind] || 'Temporary failure'} · Retry{' '}
+                            {j.retry_count}/3 at {nextCheck(j.retry_at)}
+                          </p>
+                        )}
                       </button>
                       <div className="reorder">
                         <button
@@ -1712,7 +1774,7 @@ function Settings({ state, action, busy, refresh, showToast }) {
                 <Icon size={23} />
               </span>
               <Badge status={h?.[id]?.ok ? 'published' : 'failed'}>
-                {h?.[id]?.ok ? 'Connected' : h ? 'Action needed' : 'Checking…'}
+                {h?.[id]?.ok ? 'Connected' : connectionLabels[h?.[id]?.issue?.kind] || 'Checking…'}
               </Badge>
             </div>
             <h2>{title}</h2>
@@ -1724,7 +1786,7 @@ function Settings({ state, action, busy, refresh, showToast }) {
                 <small>Existing CLI account</small>
               </div>
             ) : (
-              <p className="error-text">{h?.[id]?.error || 'No authenticated account found.'}</p>
+              <ConnectionProblem entry={h?.[id]} />
             )}
             <div className="connection-actions">
               <Button
@@ -1734,7 +1796,7 @@ function Settings({ state, action, busy, refresh, showToast }) {
                   action(`auth-${id}`, () => api('/api/auth/login', 'POST', { provider: id }))
                 }
               >
-                {h?.[id]?.ok ? 'Change account' : 'Sign in'}
+                {h?.[id]?.issue?.kind === 'authentication' ? 'Sign in' : 'Change account'}
               </Button>
               <a
                 href={
@@ -2007,7 +2069,7 @@ function Settings({ state, action, busy, refresh, showToast }) {
           checked={form.autoQueue}
           onChange={(v) => patch('autoQueue', v)}
           label="Automatically queue new and updated PRs"
-          description="Queue open, non-draft PRs within the selected age window. A failed review needs a manual retry."
+          description="Queue open, non-draft PRs within the selected age window. Temporary connection or service failures retry up to three times. Other failures need a manual retry."
         />
         <div className="right">
           <Button
@@ -2145,7 +2207,15 @@ function Detail({ modal, state, close, action, busy, setModal }) {
       {job?.error && (
         <div className="banner warning">
           <CircleAlert size={17} />
-          <span>{job.error}</span>
+          <span>
+            {job.error}
+            {job.retry_at && (
+              <>
+                <br />
+                Automatic retry {job.retry_count}/3 at {nextCheck(job.retry_at)}.
+              </>
+            )}
+          </span>
         </div>
       )}
       {job && job.current_sha !== job.sha && (

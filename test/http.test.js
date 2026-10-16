@@ -73,6 +73,17 @@ export async function startFixture() {
   return {
     url,
     root,
+    setClaudeFailure: async (message) => {
+      await writeFile(
+        path.join(bin, 'claude'),
+        `#!${process.execPath}\n${
+          message
+            ? `console.error(${JSON.stringify(message)});process.exit(1);`
+            : `console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',email:'dev@example.com'}));`
+        }`,
+        { mode: 0o755 },
+      );
+    },
     stop: async () => {
       server.kill('SIGTERM');
       await new Promise((resolve) => server.once('exit', resolve));
@@ -198,4 +209,32 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
     });
     assert.equal(remove.status, 200);
     assert.ok((await stat(path.join(app.root, 'api'))).isDirectory());
+  });
+
+if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
+  test('API exposes specific service failure and recovery without overwriting runner intent', async (t) => {
+    const app = await startFixture();
+    t.after(() => app.stop());
+    const { token } = await (await fetch(app.url + '/api/session')).json();
+    const headers = { 'Content-Type': 'application/json', 'X-Studio-Token': token };
+    await fetch(app.url + '/api/settings', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ paused: false }),
+    });
+    await app.setClaudeFailure('API Error: 503 Service unavailable');
+    const failed = await (await fetch(app.url + '/api/health')).json();
+    assert.equal(failed.claude.ok, false);
+    assert.equal(failed.claude.issue.kind, 'service');
+    assert.ok(Date.parse(failed.claude.nextCheckAt) > Date.now());
+    assert.equal((await (await fetch(app.url + '/api/state')).json()).settings.paused, false);
+    await fetch(app.url + '/api/settings', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ paused: true }),
+    });
+    await app.setClaudeFailure(null);
+    const recovered = await (await fetch(app.url + '/api/health')).json();
+    assert.equal(recovered.claude.ok, true);
+    assert.equal((await (await fetch(app.url + '/api/state')).json()).settings.paused, true);
   });
