@@ -58,7 +58,13 @@ export function createStore(dir) {
       archived: 'INTEGER NOT NULL DEFAULT 0',
       checks: "TEXT NOT NULL DEFAULT '{}'",
     },
-    jobs: { config: 'TEXT' },
+    jobs: {
+      config: 'TEXT',
+      retry_count: 'INTEGER NOT NULL DEFAULT 0',
+      retry_at: 'TEXT',
+      failure_kind: 'TEXT',
+      failure_provider: 'TEXT',
+    },
   })) {
     const existing = db
       .prepare(`PRAGMA table_info(${table})`)

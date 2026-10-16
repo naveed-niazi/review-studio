@@ -237,7 +237,7 @@ test('stale HEAD fails before Claude and does not publish', async (t) => {
   assert.match(s.job(id).error, /changed after/);
   assert.ok(!f.calls.some((c) => c.cmd === 'claude'));
 });
-test('authentication error pauses the remaining queue', async (t) => {
+test('authentication error holds the remaining queue without changing manual pause', async (t) => {
   const { s } = await fixture(t);
   const f = fakeCommands({
     resultOutput: JSON.stringify({
@@ -247,12 +247,24 @@ test('authentication error pauses the remaining queue', async (t) => {
       result: 'OAuth token expired',
     }),
   });
-  const e = new Engine(s, { command: f.command });
+  let issue;
+  const e = new Engine(s, {
+    command: f.command,
+    canRun: () => !issue,
+    reportFailure: (error, provider) => {
+      issue = { error, provider };
+    },
+  });
   s.set('paused', false);
   const id = s.enqueue('owner/repo#1');
   await drain(e);
   assert.equal(s.job(id).status, 'failed');
-  assert.equal(s.get('paused'), true);
+  assert.equal(s.get('paused'), false);
+  assert.equal(issue.provider, 'claude');
+  assert.match(issue.error.message, /expired/);
+  const next = s.enqueue('owner/repo#1');
+  await drain(e);
+  assert.equal(s.job(next).status, 'queued');
 });
 test('auto publishing is a separate operation pinned to reviewed commit', async (t) => {
   const { s } = await fixture(t);
@@ -649,4 +661,103 @@ test('fresh installation has no repository data and requires explicit review act
   assert.equal(store.settings().autoQueue, false);
   assert.equal(store.settings().publishPolicy, 'approval');
   assert.equal(store.settings().onboardingComplete, false);
+});
+
+test('transient review retry preserves identity/config and waits; manual pause still takes priority', async (t) => {
+  const { s } = await fixture(t);
+  let time = Date.now(),
+    attempts = 0;
+  const f = fakeCommands({
+    onClaude: () => {
+      if (++attempts === 1) throw new Error('API Error: 529 overloaded');
+    },
+  });
+  const e = new Engine(s, { command: f.command, clock: () => time, random: () => 0 });
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1', 'Original instructions'),
+    original = s.job(id);
+  await drain(e);
+  assert.equal(s.job(id).status, 'queued');
+  assert.equal(s.job(id).retry_count, 1);
+  assert.equal(s.job(id).failure_kind, 'service');
+  assert.equal(Date.parse(s.job(id).retry_at), time + 15000);
+  await drain(e);
+  assert.equal(attempts, 1);
+  time += 15000;
+  s.set('paused', true);
+  await drain(e);
+  assert.equal(attempts, 1);
+  s.set('paused', false);
+  await drain(e);
+  assert.equal(attempts, 2);
+  assert.equal(s.job(id).status, 'awaiting_approval');
+  assert.equal(s.job(id).sha, original.sha);
+  assert.equal(s.job(id).config, original.config);
+  const paths = f.calls
+    .filter((c) => c.cmd === 'git' && c.args.includes('worktree') && c.args.includes('add'))
+    .map((c) => c.args.join(' '));
+  assert.equal(paths.length, 2);
+  assert.notEqual(paths[0], paths[1]);
+});
+
+test('automatic reviews stop after three retries and cancellation prevents a waiting retry', async (t) => {
+  const { s } = await fixture(t);
+  let time = Date.now(),
+    attempts = 0;
+  const f = fakeCommands({
+    onClaude: () => {
+      attempts++;
+      throw new Error('API Error: 503');
+    },
+  });
+  const e = new Engine(s, { command: f.command, clock: () => time, random: () => 0 });
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1');
+  for (let i = 0; i < 4; i++) {
+    await drain(e);
+    if (i < 3) time = Date.parse(s.job(id).retry_at);
+  }
+  assert.equal(attempts, 4);
+  assert.equal(s.job(id).status, 'failed');
+  assert.equal(s.job(id).retry_count, 3);
+  assert.equal(s.get('paused'), false);
+  await drain(e);
+  assert.equal(attempts, 4);
+  const cancelled = s.enqueue('owner/repo#1');
+  await drain(e);
+  await e.cancel(cancelled);
+  time += 600000;
+  await drain(e);
+  assert.equal(s.job(cancelled).status, 'cancelled');
+  assert.equal(attempts, 5);
+});
+
+test('retry deadline survives store reopening and an updated PR fails before another Claude call', async (t) => {
+  const { s, dir } = await fixture(t);
+  let time = Date.now();
+  const f = fakeCommands({
+    onClaude: () => {
+      throw new Error('API Error: 503');
+    },
+  });
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1');
+  await drain(new Engine(s, { command: f.command, clock: () => time, random: () => 0 }));
+  const stored = s.job(id);
+  const reopened = createStore(path.join(dir, 'data'));
+  try {
+    assert.equal(reopened.job(id).retry_at, stored.retry_at);
+    assert.equal(reopened.job(id).retry_count, 1);
+    const changed = fakeCommands({ head: b });
+    const engine = new Engine(reopened, { command: changed.command, clock: () => time });
+    await drain(engine);
+    assert.equal(changed.calls.length, 0);
+    time = Date.parse(stored.retry_at);
+    await drain(engine);
+    assert.equal(reopened.job(id).status, 'failed');
+    assert.match(reopened.job(id).error, /changed after/);
+    assert.ok(!changed.calls.some((c) => c.cmd === 'claude'));
+  } finally {
+    reopened.db.close();
+  }
 });

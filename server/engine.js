@@ -3,10 +3,26 @@ import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { run, remoteRepo, claudeResult } from './process.js';
 import { renderChecks } from './rules.js';
 import { now } from './store.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { classifyFailure, retryDelay, MAX_REVIEW_RETRIES } from './connections.js';
 
 export class Engine {
-  constructor(store, { command = run, notify = () => {}, env = () => ({}) } = {}) {
+  constructor(
+    store,
+    {
+      command = run,
+      notify = () => {},
+      env = () => ({}),
+      clock = Date.now,
+      random = Math.random,
+      reportFailure = () => {},
+      canRun = () => true,
+      beforeGithub = () => {},
+      canSync = () => true,
+    } = {},
+  ) {
     this.s = store;
+    Object.assign(this, { clock, random, reportFailure, canRun, beforeGithub, canSync });
     this.command = command;
     this.notify = notify;
     this.env = env;
@@ -32,19 +48,33 @@ export class Engine {
     }
   }
   async gh(args, options) {
-    const readOnly = !args.includes('POST') && !args.includes('PATCH') && !args.includes('DELETE');
+    this.beforeGithub();
+    const methodIndex = args.findIndex((arg) => arg === '--method' || arg === '-X');
+    const method = methodIndex < 0 ? 'GET' : args[methodIndex + 1]?.toUpperCase();
+    const readOnly =
+      ['GET', 'HEAD'].includes(method) &&
+      !args.includes('--input') &&
+      !args.includes('-f') &&
+      !args.includes('-F') &&
+      !args.includes('--field') &&
+      !args.includes('--raw-field');
     for (let attempt = 0; ; attempt++) {
       try {
         return JSON.parse(await this.command('gh', args, options));
       } catch (error) {
+        error.provider = 'github';
+        const issue = classifyFailure(error, 'github');
         if (
           !readOnly ||
           this.closing ||
           attempt >= 2 ||
-          !/HTTP 50[234]|ECONNRESET|ETIMEDOUT|TLS handshake timeout/i.test(error.message)
+          !issue.retryable ||
+          issue.kind === 'rate_limit' ||
+          issue.retryAfterMs > 0 ||
+          options?.signal?.aborted
         )
           throw error;
-        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+        await delay(400 * (attempt + 1), undefined, { signal: options?.signal });
       }
     }
   }
@@ -75,25 +105,28 @@ export class Engine {
       );
     return id;
   }
-  async fetchPR(repo, number) {
-    return this.gh([
-      'pr',
-      'view',
-      String(number),
-      '--repo',
-      repo,
-      '--json',
-      'number,title,headRefOid,baseRefOid,baseRefName,headRefName,url,author,isDraft,createdAt,updatedAt,state,additions,deletions,changedFiles,body,reviews,comments',
-    ]);
+  async fetchPR(repo, number, options) {
+    return this.gh(
+      [
+        'pr',
+        'view',
+        String(number),
+        '--repo',
+        repo,
+        '--json',
+        'number,title,headRefOid,baseRefOid,baseRefName,headRefName,url,author,isDraft,createdAt,updatedAt,state,additions,deletions,changedFiles,body,reviews,comments',
+      ],
+      options,
+    );
   }
   async sync() {
-    if (this.syncing || this.closing) return;
+    if (this.syncing || this.closing || !this.canSync()) return;
     this.syncing = true;
     this.notify();
     const repos = this.s.db.prepare('SELECT * FROM repos WHERE enabled=1').all();
     let cursor = 0;
     const worker = async () => {
-      while (cursor < repos.length && !this.closing) {
+      while (cursor < repos.length && !this.closing && this.canSync()) {
         const repo = repos[cursor++];
         try {
           const prs = await this.gh([
@@ -126,13 +159,14 @@ export class Engine {
           if (this.closing) return;
           this.s.db.prepare('UPDATE repos SET error=? WHERE id=?').run(e.message, repo.id);
           this.log('error', `${repo.id}: ${e.message}`);
+          this.reportFailure(e, 'github');
         }
         this.notify();
       }
     };
     try {
       await Promise.all([worker(), worker(), worker()]);
-      if (this.s.get('autoQueue')) {
+      if (this.s.get('autoQueue') && this.canSync()) {
         const cutoff = new Date(Date.now() - this.s.get('maxAgeDays') * 86400000).toISOString();
         const candidates = this.s.db
           .prepare(
@@ -140,7 +174,7 @@ export class Engine {
           )
           .all(cutoff);
         for (const pr of candidates) {
-          if (this.closing) break;
+          if (this.closing || !this.canSync()) break;
           try {
             if (this.s.get('ageBasis') === 'commit') {
               const key = `${pr.repo}@${pr.sha}`;
@@ -181,19 +215,20 @@ export class Engine {
     }
   }
   async tick() {
-    if (this.closing || this.s.get('paused')) return;
+    if (this.closing || this.s.get('paused') || !this.canRun()) return;
     const capacity = this.s.get('concurrency') - this.running.size;
     const jobs = this.s.db
       .prepare(
-        "SELECT j.id FROM jobs j JOIN prs p ON p.id=j.pr_id JOIN repos r ON r.id=p.repo WHERE j.status='queued' AND r.enabled=1 ORDER BY j.position LIMIT ?",
+        "SELECT j.id FROM jobs j JOIN prs p ON p.id=j.pr_id JOIN repos r ON r.id=p.repo WHERE j.status='queued' AND r.enabled=1 AND (j.retry_at IS NULL OR j.retry_at<=?) ORDER BY j.position LIMIT ?",
       )
-      .all(Math.max(0, capacity));
+      .all(new Date(this.clock()).toISOString(), Math.max(0, capacity));
     for (const { id } of jobs) {
+      if (!this.canRun() || this.s.get('paused') || this.closing) break;
       const controller = new AbortController();
       this.running.set(id, controller);
       const changed = this.s.db
         .prepare(
-          "UPDATE jobs SET status='running',started_at=?,phase='Preparing repository',error=NULL WHERE id=? AND status='queued'",
+          "UPDATE jobs SET status='running',started_at=?,phase='Preparing repository',error=NULL,retry_at=NULL WHERE id=? AND status='queued'",
         )
         .run(now(), id);
       if (!changed.changes) {
@@ -203,24 +238,38 @@ export class Engine {
       this.notify();
       const promise = this.review(id, controller.signal)
         .catch((e) => {
-          const status = controller.signal.aborted ? 'cancelled' : 'failed';
+          const job = this.s.job(id);
+          const provider = e.provider || 'github';
+          const issue = classifyFailure(e, provider);
+          const cancelled = controller.signal.aborted || this.closing;
+          const retry = !cancelled && issue.retryable && job.retry_count < MAX_REVIEW_RETRIES;
+          const retryAt = retry
+            ? this.clock() + retryDelay(issue, job.retry_count + 1, this.random)
+            : null;
+          const status = cancelled ? 'cancelled' : retry ? 'queued' : 'failed';
           this.s.db
             .prepare(
-              "UPDATE jobs SET status=?,error=?,finished_at=?,phase=NULL WHERE id=? AND status='running'",
+              "UPDATE jobs SET status=?,error=?,finished_at=?,phase=?,retry_count=?,retry_at=?,failure_kind=?,failure_provider=? WHERE id=? AND status='running'",
             )
-            .run(status, e.message, now(), id);
-          this.log(status === 'failed' ? 'error' : 'info', e.message, id);
-          if (
-            /not logged|authentication|oauth|invalid.api.key|token.expired|expired.token|credit balance|HTTP 401/i.test(
+            .run(
+              status,
               e.message,
-            )
-          ) {
-            this.s.set('paused', true);
-            this.log(
-              'error',
-              'Runner paused: reconnect your account in Settings, then resume the queue.',
+              retry ? null : now(),
+              retry ? 'Waiting to retry' : null,
+              job.retry_count + (retry ? 1 : 0),
+              retryAt ? new Date(retryAt).toISOString() : null,
+              cancelled ? null : issue.kind,
+              cancelled ? null : provider,
+              id,
             );
-          }
+          if (!cancelled) this.reportFailure(e, provider, retryAt);
+          this.log(
+            retry ? 'warning' : cancelled ? 'info' : 'error',
+            retry
+              ? `${issue.summary} Review retry ${job.retry_count + 1}/${MAX_REVIEW_RETRIES} scheduled for ${new Date(retryAt).toISOString()}.`
+              : `${e.message}${!cancelled && issue.retryable ? ' Automatic review retries exhausted; retry manually when ready.' : ''}`,
+            id,
+          );
         })
         .finally(() => {
           this.running.delete(id);
@@ -232,12 +281,20 @@ export class Engine {
   async review(id, signal) {
     const job = this.s.job(id),
       repo = this.s.db.prepare('SELECT * FROM repos WHERE id=?').get(job.repo);
-    const execute = (cmd, args, opts = {}) => this.command(cmd, args, { signal, ...opts });
+    const execute = async (cmd, args, opts = {}) => {
+      try {
+        return await this.command(cmd, args, { signal, ...opts });
+      } catch (error) {
+        error.provider =
+          cmd === 'claude' ? 'claude' : cmd === 'git' && !args.includes('fetch') ? 'git' : 'github';
+        throw error;
+      }
+    };
     const phase = (text) => {
       this.s.db.prepare('UPDATE jobs SET phase=? WHERE id=?').run(text, id);
       this.log('info', text, id);
     };
-    const pr = await this.fetchPR(job.repo, job.number);
+    const pr = await this.fetchPR(job.repo, job.number, { signal });
     this.upsert(job.repo, pr);
     if (pr.state !== 'OPEN') throw new Error('This PR is no longer open.');
     if (pr.headRefOid !== job.sha)
@@ -247,8 +304,16 @@ export class Engine {
       throw new Error(
         'Local clone origin does not match the selected GitHub repository. Update its path.',
       );
-    const worktree = path.join(this.s.dir, 'worktrees', id);
-    const context = path.join(this.s.dir, 'context', id);
+    const worktree = path.join(
+      this.s.dir,
+      'worktrees',
+      job.retry_count ? `${id}-retry-${job.retry_count}` : id,
+    );
+    const context = path.join(
+      this.s.dir,
+      'context',
+      job.retry_count ? `${id}-retry-${job.retry_count}` : id,
+    );
     await mkdir(path.dirname(worktree), { recursive: true });
     await mkdir(context, { recursive: true, mode: 0o700 });
     this.s.db.prepare('UPDATE jobs SET worktree=? WHERE id=?').run(worktree, id);
@@ -353,11 +418,20 @@ export class Engine {
       await writeFile(path.join(responses, `${id}.jsonl`), output, {
         mode: 0o600,
       });
-      const result = claudeResult(output);
+      await writeFile(path.join(responses, `${id}-attempt-${job.retry_count + 1}.jsonl`), output, {
+        mode: 0o600,
+      });
+      let result;
+      try {
+        result = claudeResult(output);
+      } catch (error) {
+        error.provider = 'claude';
+        throw error;
+      }
       if (signal.aborted) throw new Error('Cancelled');
       this.s.db
         .prepare(
-          "UPDATE jobs SET status='awaiting_approval',result=?,cost=?,finished_at=?,phase=NULL WHERE id=?",
+          "UPDATE jobs SET status='awaiting_approval',result=?,cost=?,finished_at=?,phase=NULL,retry_at=NULL,failure_kind=NULL,failure_provider=NULL WHERE id=?",
         )
         .run(result.text, result.cost, now(), id);
       this.log('success', 'Review complete. Saved locally.', id);
@@ -435,6 +509,7 @@ export class Engine {
         .prepare("UPDATE jobs SET status='publish_failed',error=? WHERE id=?")
         .run(e.message, id);
       this.log('error', `Publishing failed: ${e.message}`, id);
+      this.reportFailure(e, 'github');
     } finally {
       this.notify();
     }

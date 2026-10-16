@@ -23,3 +23,7 @@ Repository content and prior comments are untrusted input. Preserve these bounda
 ## Dependency checks
 
 Run `npm audit` for the complete development dependency tree and `npm audit --omit=dev` for server runtime dependencies. The initial source release has a known moderate `sprintf-js` advisory (GHSA-hp3w-g68c-fv3c) in electron-builder’s download/proxy logging dependency chain. It is a build-tool dependency, not a server runtime dependency. Its upstream package has no patched release at preparation time; do not blindly downgrade the packaging tool or suppress the advisory. Reassess before distributing binaries.
+
+## Connection diagnostics
+
+After a transport failure in a connection check, Review Studio sends unauthenticated HEAD requests to `https://api.github.com/` and `https://api.anthropic.com/`. These requests contain no account tokens, repository data or review content. Any HTTP response establishes reachability only; it does not verify credentials, model availability or service health. Normal CLI requests continue to use the accounts configured on your machine. Recovery state stores failure categories and retry times, not credentials.

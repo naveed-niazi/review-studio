@@ -2481,3 +2481,23 @@ main {
   overflow-wrap: anywhere;
   max-width: 100%;
 }
+
+.connection-problems {
+  flex: 1;
+  min-width: 0;
+}
+.connection-problem {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.connection-problem p {
+  margin: 4px 0;
+}
+.connection-problem small {
+  display: block;
+  color: var(--muted);
+}
+.queue-title .retry-note {
+  color: #946b22;
+}

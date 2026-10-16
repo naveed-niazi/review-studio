@@ -60,6 +60,22 @@ try {
   // The fake fixture is not a real git clone, so repository validation should fail visibly.
   await page.getByRole('status').filter({ hasText: 'git exited' }).waitFor();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await fixture.setClaudeFailure('API Error: 503 Service unavailable');
+  await page.request.get(fixture.url + '/api/health');
+  await page
+    .locator('.connection-problem')
+    .getByText('Service unavailable', { exact: true })
+    .first()
+    .waitFor();
+  await page.getByText('Next connection check:', { exact: false }).first().waitFor();
+  await page.screenshot({ path: '/tmp/review-studio-recovery.png', fullPage: true });
+  assert.equal(
+    (await (await page.request.get(fixture.url + '/api/state')).json()).settings.paused,
+    true,
+  );
+  await fixture.setClaudeFailure(null);
+  await page.request.get(fixture.url + '/api/health');
+  await page.locator('.connection-problems').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: 'Add repository', exact: true }).click();
   await page.getByRole('button', { name: 'Browse repositories', exact: true }).click();
   await page.getByRole('button', { name: /acme\/new-project/ }).click();
