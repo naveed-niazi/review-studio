@@ -1,5 +1,6 @@
 // Isolated UI acceptance test. Uses fake CLI executables, never production accounts.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
 process.env.REVIEW_STUDIO_FIXTURE_ONLY = '1';
 const { startFixture } = await import('./http.test.js');
@@ -17,6 +18,8 @@ try {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(fixture.url);
   await page.getByRole('heading', { name: 'Good code. Clear reviews.' }).waitFor();
+  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  await page.getByText(`v${version}`, { exact: true }).waitFor();
   await page.getByText('Add session expiry handling to authentication').first().waitFor();
   await page.locator('.branch-tag').first().waitFor();
   assert.equal(await page.locator('.branch-tag').first().innerText(), 'into main');
