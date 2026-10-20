@@ -43,7 +43,8 @@ folder picker, and OS-backed API-key storage.
 4. Supply Claude the diff and context with read-only tools. Do not grant shell access, repository hooks, or publishing tools.
 5. Validate successful CLI completion and a recognized, unambiguous verdict. Save the result or an actionable failure.
 6. Hold for approval or publish automatically. Recheck the current head and use a per-job marker to reconcile uncertain network outcomes without duplicate publication.
-7. Remove temporary context/worktrees and report cleanup failures. Retain review history and raw CLI responses locally.
+7. Recheck eligible failed jobs against current GitHub state with persisted deadlines and a daily recovery budget. Preserve cancellations, pauses and original configuration for retries of the same commit.
+8. Remove temporary context/worktrees and report cleanup failures. Retain review history and raw CLI responses locally.
 
 ## Extension points
 

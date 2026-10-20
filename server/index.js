@@ -149,7 +149,7 @@ app.get('/api/state', (_req, res) =>
       .all(),
     jobs: store.db
       .prepare(
-        `SELECT j.id,j.pr_id,j.sha,j.status,j.position,j.instructions,j.policy,j.model,j.effort,j.created_at,j.started_at,j.finished_at,j.phase,j.error,j.published_url,j.cost,j.retry_count,j.retry_at,j.failure_kind,j.failure_provider,p.repo,p.number,p.title,p.url,p.author,p.base_branch,p.head_branch,p.sha AS current_sha FROM jobs j JOIN prs p ON p.id=j.pr_id WHERE j.status IN ('queued','running','publishing') OR j.id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500) ORDER BY j.created_at DESC`,
+        `SELECT j.id,j.pr_id,j.sha,j.status,j.position,j.instructions,j.policy,j.model,j.effort,j.created_at,j.started_at,j.finished_at,j.phase,j.error,j.published_url,j.cost,j.retry_count,j.retry_at,j.failure_kind,j.failure_provider,j.recovery_check_at,j.recovery_note,j.recovery_pending,j.recovery_count,p.state AS pr_state,p.repo,p.number,p.title,p.url,p.author,p.base_branch,p.head_branch,p.sha AS current_sha FROM jobs j JOIN prs p ON p.id=j.pr_id WHERE j.status IN ('queued','running','publishing') OR j.id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500) ORDER BY j.created_at DESC`,
       )
       .all(),
     events: store.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 120').all(),
@@ -189,6 +189,9 @@ app.patch(
       },
       effort: (v) => choice(v, ['low', 'medium', 'high', 'xhigh', 'max']),
       timeoutMinutes: (v) => integer(v, 1, 120),
+      stallMinutes: (v) => integer(v, 2, 30),
+      autoRetryFailed: boolean,
+      retryFailedMinutes: (v) => integer(v, 2, 120),
       instructions: (v) => text(v, 50000),
     };
     const entries = Object.entries(req.body);
@@ -611,6 +614,11 @@ const ticker = setInterval(async () => {
     ticking = false;
   }
 }, 1500);
+const recoveryTimer = setInterval(() => {
+  void engine
+    .recoverFailed()
+    .catch((error) => engine.log('error', `Recovery check failed: ${error.message}`));
+}, 30000);
 const healthTimer = setInterval(() => {
   void health().catch((error) => engine.log('error', `Connection check failed: ${error.message}`));
 }, 1500);
@@ -621,6 +629,7 @@ const shutdown = async () => {
   engine.closing = true;
   clearInterval(ticker);
   clearInterval(healthTimer);
+  clearInterval(recoveryTimer);
   connections.close();
   authSession?.child.kill('SIGTERM');
   for (const c of clients) c.end();

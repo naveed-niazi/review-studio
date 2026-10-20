@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { finished } from 'node:stream/promises';
 
 const active = new Map();
 export async function abortAllProcesses() {
@@ -10,7 +12,17 @@ export async function abortAllProcesses() {
 export function run(
   command,
   args,
-  { cwd, input, signal, timeout = 120000, onData, env, maxBytes = 16 * 1024 * 1024 } = {},
+  {
+    cwd,
+    input,
+    signal,
+    timeout = 120000,
+    idleTimeout = 0,
+    outputFile,
+    onData,
+    env,
+    maxBytes = 16 * 1024 * 1024,
+  } = {},
 ) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('Cancelled'));
@@ -24,7 +36,8 @@ export function run(
       stderr = '',
       failure,
       bytes = 0,
-      killTimer;
+      killTimer,
+      idleTimer;
     const kill = () => {
       try {
         process.platform === 'win32' ? child.kill('SIGTERM') : process.kill(-child.pid, 'SIGTERM');
@@ -55,16 +68,44 @@ export function run(
       kill();
     }, timeout);
     timer.unref();
+    const resetIdle = () => {
+      if (!idleTimeout || failure) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        failure = new Error(
+          `${command} produced no output for ${idleTimeout < 60000 ? `${Math.round(idleTimeout / 1000)} seconds` : `${Math.round(idleTimeout / 60000)} minutes`}. Retrying a stalled process.`,
+        );
+        failure.code = 'REVIEW_STALLED';
+        kill();
+      }, idleTimeout);
+      idleTimer.unref();
+    };
+    resetIdle();
+    const sink = outputFile ? createWriteStream(outputFile, { mode: 0o600, flags: 'wx' }) : null;
+    const saved = sink
+      ? finished(sink).catch((error) => {
+          failure ||= error;
+          kill();
+        })
+      : null;
+    if (sink) child.stdout.pipe(sink);
     const receive = (chunk, stream) => {
+      resetIdle();
       bytes += chunk.length;
       if (bytes > maxBytes) {
         failure = new Error(`${command} output exceeded ${Math.round(maxBytes / 1024 / 1024)} MB`);
+        if (sink) {
+          child.stdout.unpipe(sink);
+          sink.end();
+        }
         kill();
         return;
       }
+      if (stream === 'stdout' && sink && !onData) return;
       const text = chunk.toString();
-      if (stream === 'stdout') stdout += text;
-      else stderr += text;
+      if (stream === 'stdout') {
+        if (!sink) stdout += text;
+      } else stderr += text;
       try {
         onData?.(text, stream);
       } catch (e) {
@@ -79,16 +120,31 @@ export function run(
     child.on('error', (e) => {
       failure = e;
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
+      clearTimeout(idleTimer);
+      clearTimeout(timer);
+      await saved;
       active.delete(child);
       markClosed();
       clearTimeout(timer);
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', abort);
       if (failure) reject(failure);
-      else if (code !== 0)
-        reject(new Error(`${command} exited ${code}: ${(stderr || stdout).trim().slice(-4000)}`));
-      else resolve(stdout.trim());
+      else if (code !== 0) {
+        let detail = (stderr || stdout).trim().slice(-4000);
+        if (command === 'claude') {
+          for (const line of stdout.trim().split('\n').reverse()) {
+            try {
+              const event = JSON.parse(line);
+              if (event.type === 'result' && event.is_error) {
+                detail = event.result || event.errors?.join('\n') || detail;
+                break;
+              }
+            } catch {}
+          }
+        }
+        reject(new Error(`${command} exited ${code}: ${detail.slice(-4000)}`));
+      } else resolve(stdout.trim());
     });
   });
 }

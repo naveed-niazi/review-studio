@@ -4,7 +4,13 @@ import { run, remoteRepo, claudeResult } from './process.js';
 import { renderChecks } from './rules.js';
 import { now } from './store.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { classifyFailure, retryDelay, MAX_REVIEW_RETRIES } from './connections.js';
+import {
+  classifyFailure,
+  retryDelay,
+  MAX_REVIEW_RETRIES,
+  MAX_DAILY_RECOVERIES,
+  recoverableReview,
+} from './connections.js';
 
 export class Engine {
   constructor(
@@ -238,11 +244,17 @@ export class Engine {
       this.notify();
       const promise = this.review(id, controller.signal)
         .catch((e) => {
+          if (this.closing && !controller.userCancelled) {
+            e = new Error('App stopped during review. Recovery will recheck this PR.');
+            e.provider = 'claude';
+          }
           const job = this.s.job(id);
           const provider = e.provider || 'github';
           const issue = classifyFailure(e, provider);
-          const cancelled = controller.signal.aborted || this.closing;
-          const retry = !cancelled && issue.retryable && job.retry_count < MAX_REVIEW_RETRIES;
+          const cancelled =
+            controller.userCancelled || (controller.signal.aborted && !this.closing);
+          const retry =
+            !this.closing && !cancelled && issue.retryable && job.retry_count < MAX_REVIEW_RETRIES;
           const retryAt = retry
             ? this.clock() + retryDelay(issue, job.retry_count + 1, this.random)
             : null;
@@ -262,12 +274,27 @@ export class Engine {
               cancelled ? null : provider,
               id,
             );
+          if (
+            status === 'failed' &&
+            recoverableReview({ ...job, error: e.message, failure_provider: provider })
+          ) {
+            this.s.db
+              .prepare(
+                'UPDATE jobs SET recovery_check_at=?,recovery_pending=1,recovery_note=? WHERE id=? AND status=?',
+              )
+              .run(
+                new Date(this.clock() + this.s.get('retryFailedMinutes') * 60000).toISOString(),
+                'Will check whether this PR still needs a review.',
+                id,
+                'failed',
+              );
+          }
           if (!cancelled) this.reportFailure(e, provider, retryAt);
           this.log(
             retry ? 'warning' : cancelled ? 'info' : 'error',
             retry
               ? `${issue.summary} Review retry ${job.retry_count + 1}/${MAX_REVIEW_RETRIES} scheduled for ${new Date(retryAt).toISOString()}.`
-              : `${e.message}${!cancelled && issue.retryable ? ' Automatic review retries exhausted; retry manually when ready.' : ''}`,
+              : `${e.message}${!cancelled && issue.retryable ? ' Immediate retries exhausted; periodic recovery will recheck this PR when enabled.' : ''}`,
             id,
           );
         })
@@ -276,6 +303,159 @@ export class Engine {
           this.notify();
         });
       controller.promise = promise;
+    }
+  }
+  async recoverFailed() {
+    if (
+      this.recovering ||
+      this.closing ||
+      this.s.get('paused') ||
+      !this.s.get('autoRetryFailed') ||
+      !this.canRun() ||
+      !this.canSync()
+    )
+      return;
+    this.recovering = true;
+    try {
+      const current = new Date(this.clock()).toISOString();
+      const jobs = this.s.db
+        .prepare(
+          `SELECT j.* FROM jobs j JOIN prs p ON p.id=j.pr_id JOIN repos r ON r.id=p.repo
+        WHERE j.status='failed' AND r.enabled=1 AND r.archived=0
+        AND (j.recovery_check_at IS NULL OR j.recovery_check_at<=?)
+        AND NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.pr_id=j.pr_id AND newer.rowid>j.rowid)
+        ORDER BY COALESCE(j.recovery_check_at,j.finished_at,j.created_at) LIMIT 10`,
+        )
+        .all(current);
+      for (const candidate of jobs) {
+        if (
+          this.closing ||
+          this.s.get('paused') ||
+          !this.s.get('autoRetryFailed') ||
+          !this.canRun() ||
+          !this.canSync()
+        )
+          break;
+        const job = this.s.job(candidate.id);
+        const eligible = recoverableReview(job);
+        const delayMs = this.s.get('retryFailedMinutes') * 60000;
+        const defer = (message, ms = delayMs, pending = eligible) => {
+          this.s.db
+            .prepare(
+              "UPDATE jobs SET recovery_check_at=?,recovery_note=?,recovery_pending=? WHERE id=? AND status='failed'",
+            )
+            .run(new Date(this.clock() + ms).toISOString(), message, +pending, job.id);
+        };
+        const age = this.clock() - Date.parse(job.finished_at || job.created_at);
+        if (age < delayMs) {
+          defer('Waiting before checking this PR again.', delayMs - age);
+          continue;
+        }
+        // Reserve the next check before I/O, including when the app exits mid-check.
+        defer('Checking whether this PR still needs a review.');
+        try {
+          const pr = await this.fetchPR(job.repo, job.number);
+          if (this.closing) break;
+          this.upsert(job.repo, pr);
+          // UI/API actions may have cancelled or superseded this job during the request.
+          if (
+            this.s.get('paused') ||
+            !this.s.get('autoRetryFailed') ||
+            this.s.job(job.id)?.status !== 'failed'
+          )
+            continue;
+          const repo = this.s.db
+            .prepare('SELECT enabled,archived FROM repos WHERE id=?')
+            .get(job.repo);
+          if (!repo?.enabled || repo.archived) continue;
+          if (pr.state !== 'OPEN') {
+            this.s.db
+              .prepare(
+                "UPDATE jobs SET status='skipped',phase=NULL,retry_at=NULL,recovery_pending=0,recovery_note=? WHERE pr_id=? AND status IN ('failed','queued')",
+              )
+              .run(
+                pr.state === 'MERGED'
+                  ? 'PR merged; no further review needed.'
+                  : 'PR closed; no further review needed.',
+                job.pr_id,
+              );
+            this.log(
+              'info',
+              `Recovery skipped ${job.pr_id}: PR is ${pr.state.toLowerCase()}.`,
+              job.id,
+            );
+            continue;
+          }
+          const newer = this.s.db
+            .prepare(
+              'SELECT 1 FROM jobs WHERE pr_id=? AND rowid>(SELECT rowid FROM jobs WHERE id=?)',
+            )
+            .get(job.pr_id, job.id);
+          const reviewed = this.s.db
+            .prepare(
+              "SELECT 1 FROM jobs WHERE pr_id=? AND sha=? AND status IN ('awaiting_approval','published','publish_failed','publishing')",
+            )
+            .get(job.pr_id, pr.headRefOid);
+          if (newer || reviewed) {
+            this.s.db
+              .prepare(
+                "UPDATE jobs SET status='skipped',recovery_pending=0,recovery_note=? WHERE id=? AND status='failed'",
+              )
+              .run('A newer attempt or completed review already covers this PR.', job.id);
+            continue;
+          }
+          if (pr.isDraft) {
+            defer('PR is a draft; waiting until it is ready for review.');
+            continue;
+          }
+          if (pr.headRefOid !== job.sha) {
+            this.s.transaction(() => {
+              this.s.enqueue(job.pr_id, job.instructions);
+              this.s.db
+                .prepare(
+                  "UPDATE jobs SET status='skipped',recovery_pending=0,recovery_note=? WHERE id=?",
+                )
+                .run('Queued a review of the latest commit.', job.id);
+            });
+            this.log('info', `Recovery queued the latest commit for ${job.pr_id}.`, job.id);
+            continue;
+          }
+          if (!eligible) {
+            defer('This error needs attention before another review can run.', 3600000, false);
+            continue;
+          }
+          const windowStart = Date.parse(job.recovery_window);
+          const inWindow = Number.isFinite(windowStart) && this.clock() - windowStart < 86400000;
+          const count = inWindow ? job.recovery_count : 0;
+          if (count >= MAX_DAILY_RECOVERIES) {
+            defer(
+              'Daily recovery limit reached (3 attempts). Will check again after the cooldown.',
+              windowStart + 86400000 - this.clock(),
+            );
+            continue;
+          }
+          this.s.db
+            .prepare(
+              `UPDATE jobs SET status='queued',position=(SELECT COALESCE(MAX(position),0)+1 FROM jobs),
+            retry_count=retry_count+1,retry_at=NULL,recovery_check_at=NULL,recovery_pending=0,recovery_note=NULL,
+            recovery_count=?,recovery_window=?,finished_at=NULL,phase='Queued by automatic recovery'
+            WHERE id=? AND status='failed'`,
+            )
+            .run(count + 1, inWindow ? job.recovery_window : current, job.id);
+          this.log(
+            'info',
+            `Automatic recovery queued ${job.pr_id} (attempt ${count + 1}/${MAX_DAILY_RECOVERIES} in 24 hours).`,
+            job.id,
+          );
+        } catch (error) {
+          defer('Could not check the PR. Will try again when GitHub is reachable.');
+          this.reportFailure(error, 'github');
+          this.log('warning', `Could not recheck ${job.pr_id}: ${error.message}`, job.id);
+        }
+      }
+    } finally {
+      this.recovering = false;
+      this.notify();
     }
   }
   async review(id, signal) {
@@ -296,7 +476,15 @@ export class Engine {
     };
     const pr = await this.fetchPR(job.repo, job.number, { signal });
     this.upsert(job.repo, pr);
-    if (pr.state !== 'OPEN') throw new Error('This PR is no longer open.');
+    if (pr.state !== 'OPEN') {
+      this.s.db
+        .prepare(
+          "UPDATE jobs SET status='skipped',phase=NULL,finished_at=?,recovery_pending=0,recovery_note=? WHERE id=?",
+        )
+        .run(now(), 'PR closed or merged; no further review needed.', id);
+      this.log('info', 'PR closed or merged; review skipped.', id);
+      return;
+    }
     if (pr.headRefOid !== job.sha)
       throw new Error('The PR changed after it was queued. Retry to review the new commit.');
     const remote = await execute('git', ['-C', repo.path, 'remote', 'get-url', 'origin']);
@@ -336,7 +524,7 @@ export class Engine {
         await execute('git', ['-C', repo.path, 'worktree', 'add', '--detach', worktree, job.sha]);
         created = true;
       });
-      const diff = await execute(
+      await execute(
         'git',
         [
           '-C',
@@ -347,9 +535,8 @@ export class Engine {
           `${pr.baseRefOid}...${job.sha}`,
           '--',
         ],
-        { maxBytes: 24 * 1024 * 1024 },
+        { maxBytes: 128 * 1024 * 1024, outputFile: path.join(context, 'diff.patch') },
       );
-      await writeFile(path.join(context, 'diff.patch'), diff, { mode: 0o600 });
       await writeFile(path.join(context, 'pr.json'), JSON.stringify(pr, null, 2), { mode: 0o600 });
       phase('Claude is reviewing');
       let buffer = '';
@@ -391,6 +578,7 @@ export class Engine {
           '--output-format',
           'stream-json',
           '--verbose',
+          '--include-partial-messages',
           ...(job.model === 'default' ? [] : ['--model', job.model]),
           '--effort',
           job.effort,
@@ -408,6 +596,7 @@ export class Engine {
           cwd: worktree,
           input: prompt,
           timeout: this.s.get('timeoutMinutes') * 60000,
+          idleTimeout: this.s.get('stallMinutes') * 60000,
           env: this.env(),
           onData,
         },
@@ -516,10 +705,18 @@ export class Engine {
   }
   cancel(id) {
     const job = this.s.job(id);
-    if (!job || !['queued', 'running'].includes(job.status))
-      throw new Error('Only queued or running reviews can be cancelled.');
+    if (
+      !job ||
+      (!['queued', 'running'].includes(job.status) &&
+        !(job.status === 'failed' && job.recovery_pending))
+    )
+      throw new Error('Only queued, running or recovering reviews can be cancelled.');
     if (job.status === 'running') {
-      this.running.get(id)?.abort();
+      const controller = this.running.get(id);
+      if (controller) {
+        controller.userCancelled = true;
+        controller.abort();
+      }
       this.log('info', 'Cancellation requested', id);
     } else {
       this.s.db

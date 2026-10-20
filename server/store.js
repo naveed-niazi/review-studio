@@ -15,6 +15,9 @@ export const defaults = {
   model: 'sonnet',
   effort: 'medium',
   timeoutMinutes: 30,
+  stallMinutes: 5,
+  autoRetryFailed: true,
+  retryFailedMinutes: 5,
   checks: {
     tests: true,
     analytics: false,
@@ -64,6 +67,11 @@ export function createStore(dir) {
       retry_at: 'TEXT',
       failure_kind: 'TEXT',
       failure_provider: 'TEXT',
+      recovery_count: 'INTEGER NOT NULL DEFAULT 0',
+      recovery_window: 'TEXT',
+      recovery_check_at: 'TEXT',
+      recovery_note: 'TEXT',
+      recovery_pending: 'INTEGER NOT NULL DEFAULT 0',
     },
   })) {
     const existing = db
@@ -101,7 +109,7 @@ export function createStore(dir) {
   };
   // Never retry an interrupted publish automatically: GitHub may have accepted it.
   db.prepare(
-    "UPDATE jobs SET status='failed', error='App stopped during review. Retry when ready.', finished_at=? WHERE status='running'",
+    "UPDATE jobs SET status='failed', error='App stopped during review. Recovery will recheck this PR.', failure_kind='interrupted', finished_at=? WHERE status='running'",
   ).run(now());
   db.prepare(
     "UPDATE jobs SET status='publish_failed', error='App stopped during publishing. Verify GitHub before retrying.', finished_at=? WHERE status='publishing'",

@@ -42,6 +42,8 @@ try {
   await page.getByText('Publish automatically', { exact: true }).click();
   await page.getByText('Analytics accompany feature changes', { exact: true }).click();
   await page.getByLabel('Parallel reviews').fill('3');
+  await page.getByLabel('Inactivity timeout (minutes)').fill('4');
+  await page.getByLabel('Failed review recheck (minutes)').fill('6');
   await page.getByLabel('Sync interval (minutes)').fill('11');
   await page.getByLabel('Age measured from').selectOption('commit');
   await page.getByRole('button', { name: 'Save workflow settings' }).click();
@@ -50,6 +52,9 @@ try {
   assert.equal(state.settings.publishPolicy, 'automatic');
   assert.equal(state.settings.checks.analytics, true);
   assert.equal(state.settings.concurrency, 3);
+  assert.equal(state.settings.stallMinutes, 4);
+  assert.equal(state.settings.retryFailedMinutes, 6);
+  assert.equal(state.settings.autoRetryFailed, true);
   assert.equal(state.settings.syncMinutes, 11);
   assert.equal(state.settings.ageBasis, 'commit');
   assert.equal(state.templates[0].name, 'Release readiness');
@@ -112,6 +117,33 @@ try {
     await page.getByRole('button', { name: 'Pull requests', exact: true }).click();
     await page.getByRole('heading', { name: 'Good code. Clear reviews.' }).waitFor();
   }
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    const pr = data.prs[0];
+    data.jobs = [
+      {
+        id: 'recovery-demo',
+        pr_id: pr.id,
+        repo: pr.repo,
+        number: pr.number,
+        title: pr.title,
+        status: 'failed',
+        pr_state: 'OPEN',
+        created_at: new Date().toISOString(),
+        recovery_pending: 1,
+        recovery_note: 'Will check whether this PR still needs a review.',
+        recovery_check_at: new Date(Date.now() + 300000).toISOString(),
+        error: 'claude produced no output for 5 minutes',
+      },
+    ];
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /^Activity/ }).click();
+  await page.getByRole('heading', { name: /Automatic recovery/ }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: /Needs attention/ }).count(), 0);
+  await page.screenshot({ path: '/tmp/review-studio-smart-recovery.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(
     'UI acceptance passed: inbox, queue, prompts, settings, repository picker, validation errors, changed-file preview, responsive layout.',
