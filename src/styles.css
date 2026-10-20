@@ -2501,3 +2501,19 @@ main {
 .queue-title .retry-note {
   color: #946b22;
 }
+
+.recovery-panel {
+  margin-bottom: 18px;
+}
+.recovery-row {
+  color: var(--accent);
+}
+.recovery-row p {
+  color: var(--muted);
+  white-space: normal;
+}
+.recovery-paused {
+  padding: 0 24px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}

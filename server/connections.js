@@ -3,6 +3,27 @@ import { run } from './process.js';
 const names = { github: 'GitHub', claude: 'Claude', git: 'Git' };
 const transportKinds = new Set(['local_network', 'dns', 'connection']);
 export const MAX_REVIEW_RETRIES = 3;
+export const MAX_DAILY_RECOVERIES = 3;
+
+export function recoverableReview(job) {
+  const issue = classifyFailure(
+    job.error,
+    job.failure_provider || (/^claude|^Claude/.test(job.error || '') ? 'claude' : 'github'),
+  );
+  return (
+    issue.retryable ||
+    [
+      'review_timeout',
+      'stalled',
+      'interrupted',
+      'invalid_review',
+      'authentication',
+      'billing',
+    ].includes(issue.kind) ||
+    // Older versions buffered the diff and failed at 24 MB. New runs stream it to disk.
+    /git output exceeded 24 MB/.test(job.error || '')
+  );
+}
 
 export function classifyFailure(error, provider = 'github', { health = false } = {}) {
   const message = String(error?.message || error || 'Unknown error');
@@ -81,12 +102,25 @@ export function classifyFailure(error, provider = 'github', { health = false } =
     kind = 'configuration';
     actionRequired = true;
     summary = `${name}'s CLI is missing or incompatible. Check its installation in Settings.`;
+  } else if (/produced no output for|REVIEW_STALLED/.test(detail)) {
+    kind = 'stalled';
+    summary = `${name} stopped producing output. This review will be checked for recovery.`;
+  } else if (/computer went to sleep|App stopped during review/i.test(detail)) {
+    kind = 'interrupted';
+    summary = 'The review was interrupted. It will be checked for recovery.';
+  } else if (
+    /Claude (?:exited without a result|returned an empty review|did not return (?:a valid|one unambiguous) review verdict)/i.test(
+      detail,
+    )
+  ) {
+    kind = 'invalid_review';
+    summary = 'Claude did not return a usable review. It will be checked for recovery.';
   } else if (provider === 'claude' && !health && /timed out after/i.test(detail)) {
     kind = 'review_timeout';
     summary =
-      'The review exceeded its time limit. Inspect the log before retrying; this does not prove a network failure.';
+      'The review exceeded its total time limit. It will be checked for recovery; this does not prove a network failure.';
   } else if (
-    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|unexpected EOF|socket hang up|fetch failed|connection (?:error|closed|reset)|timed? ?out|TLS handshake timeout|unable to connect|network error/i.test(
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|unexpected EOF|socket hang up|fetch failed|error connecting to|connection (?:error|closed|reset)|timed? ?out|TLS handshake timeout|unable to connect|network error/i.test(
       detail,
     )
   ) {

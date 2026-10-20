@@ -70,6 +70,7 @@ const labels = {
   published: 'Published',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  skipped: 'No longer needed',
   publishing: 'Publishing',
   publish_failed: 'Publish failed',
 };
@@ -124,6 +125,14 @@ function relative(value) {
       : minutes < 1440
         ? `${Math.floor(minutes / 60)}h ago`
         : `${Math.floor(minutes / 1440)}d ago`;
+}
+function JobBadge({ job, recoveryEnabled }) {
+  const recovering = recoveryEnabled && job.status === 'failed' && job.recovery_pending;
+  return (
+    <Badge status={recovering ? 'queued' : job.status}>
+      {recovering ? 'Recovery scheduled' : null}
+    </Badge>
+  );
 }
 function Badge({ status, children }) {
   return (
@@ -295,15 +304,20 @@ function App() {
   const queued = jobs.filter((j) => j.status === 'queued').sort((a, b) => a.position - b.position),
     running = jobs.filter((j) => ['running', 'publishing'].includes(j.status)),
     ready = jobs.filter((j) => j.status === 'awaiting_approval'),
+    recovering = jobs.filter(
+      (j) =>
+        settings.autoRetryFailed &&
+        j.status === 'failed' &&
+        j.recovery_pending &&
+        j.pr_state === 'OPEN' &&
+        !jobs.some((n) => n.pr_id === j.pr_id && n.created_at > j.created_at),
+    ),
     failed = jobs.filter(
       (j) =>
         ['failed', 'publish_failed'].includes(j.status) &&
-        !jobs.some(
-          (newer) =>
-            newer.pr_id === j.pr_id &&
-            newer.created_at > j.created_at &&
-            newer.status !== 'cancelled',
-        ),
+        j.pr_state === 'OPEN' &&
+        !recovering.some((r) => r.id === j.id) &&
+        !jobs.some((newer) => newer.pr_id === j.pr_id && newer.created_at > j.created_at),
     );
   const navigate = (p) => {
     setPage(p);
@@ -667,7 +681,10 @@ function App() {
                           </div>
                           <div>
                             {job ? (
-                              <Badge status={job.status} />
+                              <JobBadge
+                                job={job}
+                                recoveryEnabled={state.settings.autoRetryFailed}
+                              />
                             ) : pr.reviewed ? (
                               <Badge status="published">Reviewed</Badge>
                             ) : pr.draft ? (
@@ -770,7 +787,7 @@ function App() {
                         onClick={() => setModal({ type: 'detail', jobId: j.id })}
                       >
                         <div>
-                          <Badge status={j.status} />
+                          <JobBadge job={j} recoveryEnabled={state.settings.autoRetryFailed} />
                           <small>{relative(j.started_at)}</small>
                         </div>
                         <h3>{j.title}</h3>
@@ -835,7 +852,7 @@ function App() {
                         {j.retry_at && (
                           <p className="retry-note">
                             {connectionLabels[j.failure_kind] || 'Temporary failure'} · Retry{' '}
-                            {j.retry_count}/3 at {nextCheck(j.retry_at)}
+                            {j.retry_count} at {nextCheck(j.retry_at)}
                           </p>
                         )}
                       </button>
@@ -899,7 +916,7 @@ function App() {
                           {relative(j.finished_at || j.created_at)}
                         </p>
                       </div>
-                      <Badge status={j.status} />
+                      <JobBadge job={j} recoveryEnabled={state.settings.autoRetryFailed} />
                       <ChevronRight size={17} />
                     </button>
                   ))
@@ -931,6 +948,39 @@ function App() {
                 title="Nothing gets lost in the logs."
                 description="Review progress and errors, with the context to take the next step."
               />
+              {recovering.length > 0 && (
+                <section className="panel recovery-panel">
+                  <div className="panel-heading">
+                    <h2>
+                      Automatic recovery <span className="count">{recovering.length}</span>
+                    </h2>
+                  </div>
+                  {settings.paused && (
+                    <p className="recovery-paused">
+                      Runner paused. Recovery continues when you start it again.
+                    </p>
+                  )}
+                  {recovering.map((j) => (
+                    <button
+                      key={j.id}
+                      className="error-row recovery-row"
+                      onClick={() => setModal({ type: 'detail', jobId: j.id })}
+                    >
+                      <Clock3 size={18} />
+                      <div>
+                        <b>
+                          {j.repo.split('/')[1]} #{j.number}
+                        </b>
+                        <p>
+                          {j.recovery_note} Next check:{' '}
+                          {new Date(j.recovery_check_at).toLocaleString()}.
+                        </p>
+                      </div>
+                      <ChevronRight size={16} />
+                    </button>
+                  ))}
+                </section>
+              )}
               {failed.length > 0 && (
                 <section className="panel attention">
                   <div className="panel-heading">
@@ -2038,13 +2088,34 @@ function Settings({ state, action, busy, refresh, showToast }) {
             />
           </label>
           <label>
-            Review timeout (minutes)
+            Total review limit (minutes)
             <input
               type="number"
               min="1"
               max="120"
               value={form.timeoutMinutes}
               onChange={(e) => patch('timeoutMinutes', Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Inactivity timeout (minutes)
+            <input
+              type="number"
+              min="2"
+              max="30"
+              value={form.stallMinutes}
+              onChange={(e) => patch('stallMinutes', Number(e.target.value))}
+            />
+            <small>Retry stalled reviews sooner. Output from Claude resets this timer.</small>
+          </label>
+          <label>
+            Failed review recheck (minutes)
+            <input
+              type="number"
+              min="2"
+              max="120"
+              value={form.retryFailedMinutes}
+              onChange={(e) => patch('retryFailedMinutes', Number(e.target.value))}
             />
           </label>
           <label>
@@ -2066,10 +2137,16 @@ function Settings({ state, action, busy, refresh, showToast }) {
           </label>
         </div>
         <Toggle
+          checked={form.autoRetryFailed}
+          onChange={(v) => patch('autoRetryFailed', v)}
+          label="Automatically recover failed reviews"
+          description="Recheck open PRs after failures, timeouts or interruptions. Up to three recovery attempts per review in 24 hours, in addition to immediate connection retries. Closed, merged and superseded reviews are skipped. Manual pauses and cancellations are respected."
+        />
+        <Toggle
           checked={form.autoQueue}
           onChange={(v) => patch('autoQueue', v)}
           label="Automatically queue new and updated PRs"
-          description="Queue open, non-draft PRs within the selected age window. Temporary connection or service failures retry up to three times. Other failures need a manual retry."
+          description="Queue open, non-draft PRs within the selected age window. Temporary connection or service failures retry up to three times. Eligible failed reviews are rechecked when automatic recovery is enabled."
         />
         <div className="right">
           <Button
@@ -2184,7 +2261,11 @@ function Detail({ modal, state, close, action, busy, setModal }) {
       onClose={close}
     >
       <div className="detail-meta">
-        {job ? <Badge status={job.status} /> : <Badge status="open">Open pull request</Badge>}
+        {job ? (
+          <JobBadge job={job} recoveryEnabled={state.settings.autoRetryFailed} />
+        ) : (
+          <Badge status="open">Open pull request</Badge>
+        )}
         <span>
           <GitBranch size={14} />
           {(job?.sha || pr?.sha || '').slice(0, 7)}
@@ -2204,7 +2285,21 @@ function Detail({ modal, state, close, action, busy, setModal }) {
           {error}
         </div>
       )}
-      {job?.error && (
+      {job?.recovery_note && (
+        <div className="banner">
+          <Clock3 size={17} />
+          <span>
+            {job.recovery_note}
+            {job.status === 'failed' &&
+            job.recovery_pending &&
+            state.settings.autoRetryFailed &&
+            job.recovery_check_at
+              ? ` Next check: ${new Date(job.recovery_check_at).toLocaleString()}.`
+              : ''}
+          </span>
+        </div>
+      )}
+      {job?.error && job.status !== 'skipped' && (
         <div className="banner warning">
           <CircleAlert size={17} />
           <span>
@@ -2212,7 +2307,7 @@ function Detail({ modal, state, close, action, busy, setModal }) {
             {job.retry_at && (
               <>
                 <br />
-                Automatic retry {job.retry_count}/3 at {nextCheck(job.retry_at)}.
+                Automatic retry {job.retry_count} at {nextCheck(job.retry_at)}.
               </>
             )}
           </span>
@@ -2470,7 +2565,8 @@ function Detail({ modal, state, close, action, busy, setModal }) {
           </Button>
         ) : (
           <>
-            {['queued', 'running'].includes(job.status) && (
+            {(['queued', 'running'].includes(job.status) ||
+              (job.status === 'failed' && job.recovery_pending)) && (
               <Button
                 busy={busy.cancel}
                 onClick={() =>

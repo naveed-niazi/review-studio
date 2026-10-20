@@ -15,7 +15,10 @@ The desktop app discovers common Homebrew, local-bin, nvm, Volta, asdf, and mise
 | Publishing                       | Approval required | Approval or automatic                                                 |
 | Parallel reviews                 | 2                 | 1–6                                                                   |
 | Sync interval                    | 8 minutes         | 1–120 minutes                                                         |
-| Review timeout                   | 30 minutes        | 1–120 minutes                                                         |
+| Total review limit               | 30 minutes        | 1–120 minutes                                                         |
+| Inactivity timeout               | 5 minutes         | 2–30 minutes without CLI output                                       |
+| Recover failed reviews           | On                | On or off, independent of automatic discovery                         |
+| Failed review recheck            | 5 minutes         | 2–120 minutes                                                         |
 | Automatic queueing               | Off               | On or off                                                             |
 | Auto-queue age window            | 15 days           | 1–365 days                                                            |
 | Age measured from                | Last PR activity  | Activity or last code commit                                          |
@@ -24,7 +27,7 @@ The desktop app discovers common Homebrew, local-bin, nvm, Volta, asdf, and mise
 | Tests / security checks          | On                | Inherit, on, or off per repository                                    |
 | Analytics / compatibility checks | Off               | Inherit, on, or off per repository                                    |
 
-Automatic discovery skips drafts and commits with an existing review attempt. Temporary connection, service and rate-limit failures retry automatically up to three times after the initial review attempt. Other failures need a manual retry. Each sync loads up to 500 open PRs per repository and reports if that limit is reached. Older or specific PRs can be added by URL. The interface includes active work and the most recent 500 review jobs.
+Automatic discovery skips drafts and commits with an existing review attempt. Temporary connection, service and rate-limit failures retry automatically up to three times after the initial review attempt. A separate recovery pass rechecks eligible failed reviews, including exhausted retries, timeouts and interruptions. Each sync loads up to 500 open PRs per repository and reports if that limit is reached. Older or specific PRs can be added by URL. The interface includes active work and the most recent 500 review jobs.
 
 Both **Start runner** and automatic queueing must be enabled for unattended discovery and review. Automatic publication is a separate opt-in. Increasing concurrency consumes more of your Claude quota and machine resources.
 
@@ -63,7 +66,7 @@ Disconnecting a repository preserves its history. Only clones in the app-managed
 
 ## Background operation
 
-Closing the desktop window keeps the engine in the menu bar by default. **Quit Review Studio** stops it. Interrupted jobs remain visible for retry; publication is never blindly repeated after interruption.
+Closing the desktop window keeps the engine in the menu bar by default. **Quit Review Studio** stops it. Interrupted reviews are eligible for automatic recovery; publication is never blindly repeated after interruption.
 
 Start at login is opt-in and available only in the packaged application. On macOS, move the app to Applications first. Unsigned development builds may not register reliably; registration failures are shown. A paused runner remains paused across restarts.
 
@@ -75,7 +78,13 @@ The app distinguishes explicit API service errors, rate limits, expired credenti
 
 Connection checks normally run every three minutes. On failure they back off from 15 seconds (60 seconds for rate limits) to five minutes, with a small random delay. A longer `Retry-After`, when exposed by the CLI, takes precedence. Retry deadlines survive restarting the app, and **Check connections** cannot bypass a known provider cooldown.
 
-A transient review failure retains its original queue position, commit and configuration, with up to three automatic retries using separate worktrees. Cancel the queued job to stop its retry. Repeated attempts may consume additional Claude quota. Each completed CLI response is retained per attempt. Invalid review output, changed/closed PRs, permission errors, review timeouts and account failures require manual attention. After fixing an API credential or billing problem, use **Check connections** and retry the affected failed job. Claude's local login status alone cannot verify that a credit balance or API credential has been repaired.
+A transient connection failure retains its original queue position, commit and configuration, with up to three immediate retries using separate worktrees. After that, or after a timeout, interruption or unusable review result, **Automatically recover failed reviews** rechecks the PR after the configured delay. The scheduler checks due work every 30 seconds, at most ten PRs per pass; a large backlog can take additional passes. It verifies current GitHub state before queueing work, skips closed/merged PRs, waits on drafts, and avoids duplicating newer attempts or completed reviews. If the commit changed, it queues the latest commit with current rules and the previous per-PR focus. Otherwise it retains the original job configuration and adds the retry to the back of the queue.
+
+Recovery allows three additional attempts per job in a rolling 24-hour window; once that budget is used, it waits until the window resets. This count and the next check survive restarting the app. These attempts are in addition to the initial connection retries and may consume Claude quota. Cancel a queued or recovering job to stop retries for that attempt, or turn recovery off in Settings. Manual pauses stop recovery as well as reviews. Permission problems, unrecognized errors and diffs above the 128 MiB file limit still need attention; publishing failures remain separate and are not automatically posted again.
+
+**Inactivity timeout** defaults to five minutes with no CLI output, independently of the 30-minute total review limit. Partial Claude output resets the inactivity timer without filling Activity with token-by-token messages. An active long review can continue until its total limit; a silent process fails sooner and enters recovery. This detects output inactivity, not a guarantee that the model is making useful progress. Adjust both limits for your workloads. Large diffs stream to a private file instead of being buffered in memory, and are never silently truncated.
+
+After fixing an API credential or billing problem, use **Check connections**. Eligible failures then enter normal recovery. Claude's local login status alone cannot verify that a credit balance or API credential has been repaired. Completed CLI responses are retained per attempt; timeout/cancellation details remain in Activity.
 
 A failed publishing request keeps the completed review locally and requires **Retry publishing**. The app checks for its existing publication marker first because a connection may fail after GitHub has already accepted a comment. It never blindly repeats a write or reruns the review to publish it.
 

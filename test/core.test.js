@@ -43,6 +43,8 @@ async function fixture(t) {
 function fakeCommands({
   head = a,
   author = 'developer',
+  state = 'OPEN',
+  isDraft = false,
   resultOutput = output,
   failPost = false,
   existing = [],
@@ -60,7 +62,8 @@ function fakeCommands({
           baseRefOid: b,
           baseRefName: 'main',
           url: 'https://github.com/owner/repo/pull/1',
-          state: 'OPEN',
+          state,
+          isDraft,
           author: { login: author },
           reviews: [],
           comments: [],
@@ -77,7 +80,10 @@ function fakeCommands({
     if (cmd === 'git') {
       if (args.includes('get-url')) return 'git@github.com:owner/repo.git';
       if (args.includes('rev-parse')) return head;
-      if (args.includes('diff')) return '+export const changed = true;';
+      if (args.includes('diff')) {
+        if (opts.outputFile) await writeFile(opts.outputFile, '+export const changed = true;');
+        return opts.outputFile ? '' : '+export const changed = true;';
+      }
       return '';
     }
     if (cmd === 'claude') {
@@ -760,4 +766,231 @@ test('retry deadline survives store reopening and an updated PR fails before ano
   } finally {
     reopened.db.close();
   }
+});
+
+function failedJob(s, error = 'claude timed out after 30 minutes') {
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1', 'Keep this focus');
+  s.db
+    .prepare("UPDATE jobs SET status='failed',error=?,finished_at=?,retry_count=3 WHERE id=?")
+    .run(error, new Date(Date.now() - 3600000).toISOString(), id);
+  return id;
+}
+
+test('periodic recovery requeues exhausted reviews with original config, then enforces a durable daily budget', async (t) => {
+  const { s, dir } = await fixture(t);
+  const id = failedJob(s),
+    original = s.job(id);
+  let time = Date.now();
+  const e = new Engine(s, { command: fakeCommands().command, clock: () => time });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await e.recoverFailed();
+    assert.equal(s.job(id).status, 'queued');
+    assert.equal(s.job(id).recovery_count, attempt);
+    assert.equal(s.job(id).config, original.config);
+    assert.equal(s.job(id).sha, a);
+    assert.equal(s.job(id).instructions, 'Keep this focus');
+    s.db
+      .prepare("UPDATE jobs SET status='failed',finished_at=? WHERE id=?")
+      .run(new Date(time).toISOString(), id);
+    time += 300000;
+  }
+  const reopened = createStore(path.join(dir, 'data'));
+  try {
+    const restored = new Engine(reopened, { command: fakeCommands().command, clock: () => time });
+    await restored.recoverFailed();
+    assert.equal(reopened.job(id).status, 'failed');
+    assert.equal(reopened.job(id).recovery_count, 3);
+    assert.match(reopened.job(id).recovery_note, /Daily recovery limit/);
+    time = Date.parse(reopened.job(id).recovery_check_at);
+    await restored.recoverFailed();
+    assert.equal(reopened.job(id).status, 'queued');
+    assert.equal(reopened.job(id).recovery_count, 1);
+  } finally {
+    reopened.db.close();
+  }
+});
+
+test('recovery skips merged PRs, replaces stale commits, and waits on drafts', async (t) => {
+  for (const state of ['MERGED', 'CLOSED']) {
+    const { s } = await fixture(t);
+    const id = failedJob(s);
+    const f = fakeCommands({ state });
+    await new Engine(s, { command: f.command }).recoverFailed();
+    assert.equal(s.job(id).status, 'skipped');
+    assert.ok(!f.calls.some((c) => c.cmd === 'claude'));
+  }
+  const { s } = await fixture(t);
+  const id = failedJob(s);
+  await new Engine(s, { command: fakeCommands({ isDraft: true }).command }).recoverFailed();
+  assert.equal(s.job(id).status, 'failed');
+  assert.match(s.job(id).recovery_note, /draft/);
+  s.db.prepare('UPDATE jobs SET recovery_check_at=NULL WHERE id=?').run(id);
+  await new Engine(s, { command: fakeCommands({ head: b }).command }).recoverFailed();
+  assert.equal(s.job(id).status, 'skipped');
+  const next = s.db.prepare("SELECT * FROM jobs WHERE status='queued'").get();
+  assert.equal(next.sha, b);
+  assert.equal(next.instructions, 'Keep this focus');
+});
+
+test('recovery respects pause, disabled recovery, cancellation, and newer completed work', async (t) => {
+  const { s } = await fixture(t);
+  const id = failedJob(s);
+  const f = fakeCommands(),
+    e = new Engine(s, { command: f.command });
+  s.set('paused', true);
+  await e.recoverFailed();
+  assert.equal(f.calls.length, 0);
+  s.set('paused', false);
+  s.set('autoRetryFailed', false);
+  await e.recoverFailed();
+  assert.equal(f.calls.length, 0);
+  s.set('autoRetryFailed', true);
+  const next = s.enqueue('owner/repo#1');
+  s.db.prepare("UPDATE jobs SET status='published',result=? WHERE id=?").run(result, next);
+  await e.recoverFailed();
+  assert.equal(f.calls.length, 0);
+  assert.equal(s.job(id).status, 'failed');
+});
+
+test('cancelling recovery during its PR check cannot requeue the cancelled job', async (t) => {
+  const { s } = await fixture(t);
+  const id = failedJob(s);
+  let finish;
+  const f = fakeCommands();
+  const e = new Engine(s, {
+    command: async (...args) => {
+      await new Promise((resolve) => {
+        finish = resolve;
+      });
+      return f.command(...args);
+    },
+  });
+  const recovery = e.recoverFailed();
+  assert.ok(finish);
+  e.cancel(id);
+  finish();
+  await recovery;
+  assert.equal(s.job(id).status, 'cancelled');
+  assert.equal(s.job(id).recovery_count, 0);
+});
+
+test('failed GitHub rechecks do not consume recovery budget or infer that a PR closed', async (t) => {
+  const { s } = await fixture(t);
+  const id = failedJob(s);
+  let reported;
+  const e = new Engine(s, {
+    command: async () => {
+      throw new Error('HTTP 429\nRetry-After: 120');
+    },
+    reportFailure: (error) => {
+      reported = error;
+    },
+  });
+  await e.recoverFailed();
+  assert.ok(reported);
+  assert.equal(s.job(id).status, 'failed');
+  assert.equal(s.job(id).recovery_count, 0);
+  assert.equal(s.db.prepare('SELECT state FROM prs').get().state, 'OPEN');
+  assert.ok(Date.parse(s.job(id).recovery_check_at) > Date.now());
+});
+
+test('a queued PR that merged is skipped rather than reported as a failure', async (t) => {
+  const { s } = await fixture(t);
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1');
+  const f = fakeCommands({ state: 'MERGED' });
+  await drain(new Engine(s, { command: f.command }));
+  assert.equal(s.job(id).status, 'skipped');
+  assert.ok(!f.calls.some((c) => c.cmd === 'claude'));
+});
+
+test('inactivity timeout stops silence but resets with output, independently of the total limit', async () => {
+  await assert.rejects(
+    run(process.execPath, ['-e', 'setTimeout(()=>{},10000)'], { timeout: 5000, idleTimeout: 500 }),
+    /produced no output/,
+  );
+  const output = await run(
+    process.execPath,
+    [
+      '-e',
+      "let n=0;const t=setInterval(()=>{console.log('progress');if(++n===5)clearInterval(t);},200);",
+    ],
+    { timeout: 5000, idleTimeout: 500 },
+  );
+  assert.equal(output.split('\n').length, 5);
+  await assert.rejects(
+    run(process.execPath, ['-e', "setInterval(()=>console.log('progress'),50)"], {
+      timeout: 600,
+      idleTimeout: 500,
+    }),
+    /timed out/,
+  );
+});
+
+test('large output streams to a private file and remains bounded', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'review-studio-stream-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'diff.patch');
+  const output = await run(
+    process.execPath,
+    ['-e', "process.stdout.write('x'.repeat(2*1024*1024))"],
+    { outputFile: file, maxBytes: 3 * 1024 * 1024 },
+  );
+  assert.equal(output, '');
+  assert.equal((await readFile(file)).length, 2 * 1024 * 1024);
+  await assert.rejects(
+    run(process.execPath, ['-e', "process.stdout.write('x'.repeat(2*1024*1024))"], {
+      outputFile: path.join(dir, 'too-large.patch'),
+      maxBytes: 1024,
+    }),
+    /output exceeded/,
+  );
+});
+
+test('app shutdown leaves interrupted work eligible for recovery, while user cancellation stays cancelled', async (t) => {
+  const { s } = await fixture(t);
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1');
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const f = fakeCommands({
+    onClaude: ({ signal }) =>
+      new Promise((_resolve, reject) => {
+        started();
+        signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+      }),
+  });
+  const e = new Engine(s, { command: f.command });
+  await e.tick();
+  await ready;
+  await e.close();
+  assert.equal(s.job(id).status, 'failed');
+  assert.equal(s.job(id).failure_kind, 'interrupted');
+  assert.equal(s.job(id).recovery_pending, 1);
+});
+
+test('explicit cancellation wins when the app quits at the same time', async (t) => {
+  const { s } = await fixture(t);
+  s.set('paused', false);
+  const id = s.enqueue('owner/repo#1');
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const f = fakeCommands({
+    onClaude: ({ signal }) =>
+      new Promise((_resolve, reject) => {
+        started();
+        signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+      }),
+  });
+  const e = new Engine(s, { command: f.command });
+  await e.tick();
+  await ready;
+  e.cancel(id);
+  await e.close();
+  assert.equal(s.job(id).status, 'cancelled');
 });
