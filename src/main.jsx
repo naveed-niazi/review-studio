@@ -1052,7 +1052,7 @@ function App() {
             <Layers3 size={13} /> Review Studio
           </span>
           <span>Built for thoughtful reviews. Powered by Claude Code.</span>
-          <span>v1.0.0</span>
+          <span>v{__APP_VERSION__}</span>
         </footer>
       </main>
       {toast && (

@@ -16,15 +16,15 @@ Find development builds in **Actions → macOS build and release → run → Art
 
 ## Release a version
 
-1. Update `package.json` and `package-lock.json` together, using `npm version 1.0.1 --no-git-tag-version` for example. Update versioned download links in the README when preparing the next release.
+1. Update `package.json` and `package-lock.json` together, using `npm version 1.1.0 --no-git-tag-version` for example. Update versioned download links in the README and add `docs/releases/<version>.md` with the changes and upgrade notes. The publisher includes this file in the release and refuses to publish without it.
 2. Open a PR and review the changes. Merge only after relevant CI and packaging checks pass.
 3. Update your checkout and tag the reviewed commit:
 
    ```sh
    git switch main
    git pull --ff-only
-   git tag -a v1.0.1 -m "Review Studio 1.0.1"
-   git push origin v1.0.1
+   git tag -a v1.1.0 -m "Review Studio 1.1.0"
+   git push origin v1.1.0
    ```
 
 4. Follow the **macOS build and release** run. The tag must exactly match the package version and its commit must be reachable from `main`.
@@ -40,7 +40,7 @@ Download both assets into the same folder:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
-gh attestation verify Review-Studio-1.0.0-arm64.dmg --repo naveed-niazi/review-studio
+gh attestation verify Review-Studio-1.1.0-arm64.dmg --repo naveed-niazi/review-studio
 ```
 
 Checksums verify file integrity. Provenance links an artifact to its GitHub workflow and source commit; it is not a security audit or an Apple signature. See [GitHub’s artifact attestation documentation](https://docs.github.com/en/actions/concepts/security/artifact-attestations).
