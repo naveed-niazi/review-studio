@@ -24,9 +24,17 @@ _All screenshots use fictional repositories and isolated demo data._
 
 Review Studio uses Claude Code for analysis and GitHub CLI for repository access. There is no Review Studio account or hosted backend to configure. Review content is sent to Anthropic through Claude Code; this is **not an offline model**.
 
+## Review and merge from one dashboard
+
+See the latest review verdict and Action line beside each PR, and open the full text with **Latest review**. Filter reviewed changes by verdict, repository, DEV/PROD target, and base branch; open the full review before choosing merge commit, squash, or rebase. Bring outdated branches up to date with **Update with base branch**, then queue a fresh review. Optional repository rules can automatically merge published, current reviews matching an exact base branch and selected non-blocking verdicts. GitHub checks and merge restrictions must pass. Automatic merging starts disabled. See [merge configuration and limitations](docs/configuration.md#reviewed-prs-and-merging).
+
+![Reviewed pull requests with verdict and environment filters](docs/screenshots/reviewed-pull-requests.png)
+
+![Review Studio merge confirmation with latest review and merge method selection](docs/screenshots/merge-review.png)
+
 ## Download for Mac
 
-[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.1.0/Review-Studio-1.1.0-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.1.0)
+[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.2.0/Review-Studio-1.2.0-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.2.0)
 
 Requires an Apple Silicon Mac (M-series), macOS 13 or newer, Git, GitHub CLI, and Claude Code. Node.js is bundled in the app; you do not need to install Node.js or clone this repository to use the download. Intel Macs, Windows, and Linux installers are not included.
 
@@ -108,7 +116,7 @@ Open [localhost:8790](http://127.0.0.1:8790). Keep the server process running. T
 
 Pull requests run CI. Changes affecting the application or packaging also exercise the Mac installer workflow. Every push to `main` builds a tested Apple Silicon installer, available for seven days under the [workflow run’s Artifacts section](https://github.com/naveed-niazi/review-studio/actions/workflows/macos-release.yml).
 
-Public downloads are published from version tags such as `v1.1.0`, after clean-runner builds, tests, package inspection, and checksum verification. Releases include GitHub build provenance. The tag must match `package.json` and point to a commit already on `main`; published versions are never overwritten. See the [release guide](docs/releasing.md).
+Public downloads are published from version tags such as `v1.2.0`, after clean-runner builds, tests, package inspection, and checksum verification. Releases include GitHub build provenance. The tag must match `package.json` and point to a commit already on `main`; published versions are never overwritten. See the [release guide](docs/releasing.md).
 
 ## Development and contributions
 

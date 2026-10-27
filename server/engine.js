@@ -487,6 +487,9 @@ export class Engine {
     }
     if (pr.headRefOid !== job.sha)
       throw new Error('The PR changed after it was queued. Retry to review the new commit.');
+    this.s.db
+      .prepare('UPDATE jobs SET reviewed_base_branch=? WHERE id=?')
+      .run(pr.baseRefName || null, id);
     const remote = await execute('git', ['-C', repo.path, 'remote', 'get-url', 'origin']);
     if (remoteRepo(remote)?.toLowerCase() !== repo.id.toLowerCase())
       throw new Error(

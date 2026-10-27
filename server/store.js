@@ -48,6 +48,11 @@ export function createStore(dir) {
     CREATE TABLE IF NOT EXISTS prs (id TEXT PRIMARY KEY, repo TEXT NOT NULL REFERENCES repos(id), number INTEGER NOT NULL, sha TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, author TEXT, draft INTEGER, created_at TEXT, updated_at TEXT, state TEXT DEFAULT 'OPEN', additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, files INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, pr_id TEXT NOT NULL REFERENCES prs(id), sha TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, instructions TEXT NOT NULL DEFAULT '', policy TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, phase TEXT, result TEXT, error TEXT, published_url TEXT, cost REAL, worktree TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, level TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS merges (id TEXT PRIMARY KEY, pr_id TEXT NOT NULL REFERENCES prs(id), sha TEXT NOT NULL, base_branch TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES jobs(id), method TEXT NOT NULL, automatic INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, commit_sha TEXT, error TEXT);
+    CREATE TABLE IF NOT EXISTS branch_updates (id TEXT PRIMARY KEY, pr_id TEXT NOT NULL REFERENCES prs(id), sha TEXT NOT NULL, base_branch TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, error TEXT);
+    CREATE INDEX IF NOT EXISTS branch_updates_pr ON branch_updates(pr_id);
+    CREATE INDEX IF NOT EXISTS merges_pr ON merges(pr_id,sha);
+    CREATE INDEX IF NOT EXISTS jobs_review ON jobs(pr_id,created_at);
     CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, position);
     CREATE INDEX IF NOT EXISTS events_job ON events(job_id, id);
     CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(pr_id) WHERE status IN ('queued','running','publishing');`);
@@ -60,9 +65,11 @@ export function createStore(dir) {
       managed: 'INTEGER NOT NULL DEFAULT 0',
       archived: 'INTEGER NOT NULL DEFAULT 0',
       checks: "TEXT NOT NULL DEFAULT '{}'",
+      merge_config: 'TEXT',
     },
     jobs: {
       config: 'TEXT',
+      reviewed_base_branch: 'TEXT',
       retry_count: 'INTEGER NOT NULL DEFAULT 0',
       retry_at: 'TEXT',
       failure_kind: 'TEXT',
@@ -114,6 +121,12 @@ export function createStore(dir) {
   db.prepare(
     "UPDATE jobs SET status='publish_failed', error='App stopped during publishing. Verify GitHub before retrying.', finished_at=? WHERE status='publishing'",
   ).run(now());
+  db.prepare(
+    "UPDATE merges SET status='unknown',error='App stopped during merging. Verify the outcome on GitHub before retrying.' WHERE status='merging'",
+  ).run();
+  db.prepare(
+    "UPDATE branch_updates SET status='unknown',error='App stopped during the branch update. Refresh status before trying again.' WHERE status='updating'",
+  ).run();
   const settings = () => Object.fromEntries(Object.keys(defaults).map((k) => [k, get(k)]));
   const job = (id) =>
     db

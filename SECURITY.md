@@ -22,7 +22,7 @@ Repository content and prior comments are untrusted input. Preserve these bounda
 
 ## Dependency checks
 
-Run `npm audit` for the complete development dependency tree and `npm audit --omit=dev` for server runtime dependencies. The initial source release has a known moderate `sprintf-js` advisory (GHSA-hp3w-g68c-fv3c) in electron-builder’s download/proxy logging dependency chain. It is a build-tool dependency, not a server runtime dependency. Its upstream package has no patched release at preparation time; do not blindly downgrade the packaging tool or suppress the advisory. Reassess before distributing binaries.
+Run `npm audit` for the complete development dependency tree and `npm audit --omit=dev` for server runtime dependencies. The 1.2.0 release updates Electron, the HTTP body parser, and build-tool dependencies to patched compatible versions; both audits reported no known advisories at preparation time. Electron is declared as a development dependency but is bundled into desktop installers, so reviewing only the server audit is insufficient. Reassess before distributing each release; a clean audit is not a security guarantee.
 
 ## Connection diagnostics
 

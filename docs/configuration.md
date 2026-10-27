@@ -100,3 +100,41 @@ A failed publishing request keeps the completed review locally and requires **Re
 - **macOS blocks a locally built app:** development builds are unsigned. Use `npm run desktop` from source, or sign/notarize your own build following the release guide.
 
 GitHub.com is the supported API target. GitHub Enterprise and Windows/Linux desktop behavior need separate validation.
+
+## Reviewed PRs and merging
+
+Use **Latest review** on a PR to open its review text directly, even when a newer attempt has failed or is still running. **Latest attempt** opens that separate attempt.
+
+The Pull requests view shows the latest completed **Review Studio** verdict and Action line, including reviews older than the recent activity window. The **Reviewed** tab includes reviews of the current commit; **Outdated reviews** separates reviews invalidated by newer commits or a changed target branch. Filter by verdict, repository, target branch, or environment, and sort by latest activity, latest review, or age. A newer queued, failed, or running review can appear alongside the previous verdict; merging waits for the newer attempt to finish.
+
+Repository settings map exact target branch names to **DEV** and **PROD** labels. Unmapped branches show **OTHER**. Titles and source branch names never determine the environment. The initial labels use `dev`, `develop`, and `development` for DEV and `main`, `master`, `prod`, and `production` for PROD; change these to match your repository.
+
+Choose **Merge…** to read the latest review and check GitHub's current requirements. The confirmation shows the source and target branches, reviewed commit, checks, and all three GitHub methods:
+
+- **Create a merge commit:** retain the branch's commits and add a merge commit.
+- **Squash and merge:** combine the PR into one commit on the target branch.
+- **Rebase and merge:** replay the PR commits on the target branch without a merge commit.
+
+Methods disabled by the GitHub repository are shown as unavailable. Review Studio does not delete branches, run local merge commands, or use an administrator bypass. It requires a current non-blocking local review of the same target branch, no newer unfinished review attempt, a non-draft open PR, write permission, a clean GitHub merge state, satisfied GitHub reviews, and successful checks (neutral/skipped checks are accepted). Conflicts, behind-base branches, pending/unknown states, and missing check data prevent the merge. Repositories requiring a merge queue must use GitHub's queue; this version does not enqueue merges there.
+
+Reviews created before 1.2.0 remain visible, but do not record which target branch was reviewed. Run a fresh review before merging those PRs through the app.
+
+### Automatic merge rules
+
+Automatic merging is **off by default**. In **Repositories → Configure → Branches & merging**, add one rule per exact target branch. Each rule chooses accepted verdicts and a merge method. For example: target `dev`, verdicts `LGTM` and `NON-BLOCKING`, method **Create a merge commit**. `NON-BLOCKING BUT FIX` is available only when explicitly selected; `BLOCKING` is never eligible.
+
+Saving a rule authorizes matching existing and future open PRs. Automatic merging additionally requires the review to be **published**, so reviews awaiting approval are not merged automatically. Pausing the runner pauses automatic merging. Removing the rule or disabling the repository stops subsequent automatic merges. Removing a repository clears its automatic merge rules; reconnecting it requires setting those rules again. A request already sent to GitHub cannot be cancelled by changing a setting.
+
+Eligible PRs are checked every minute, at most five per pass with rotation across repositories. Pending checks are revisited without consuming a merge attempt. Immediately before sending a merge, the app checks the live PR and current settings again, then sends GitHub the exact reviewed head SHA. New pushes cause GitHub to reject a mismatched SHA. GitHub's merge API has no atomic base-branch precondition: the preview and final check catch observed retargeting, but a retarget in the small interval after that check remains a platform limitation. Avoid retargeting a PR while a merge is in progress.
+
+Each submitted merge is recorded in **Recent merge attempts**. A failure or lost response is never automatically resubmitted for that commit. **Check status** can reconcile an uncertain outcome when GitHub reports the PR merged. If the PR remains open with an uncertain outcome, verify it on GitHub rather than retrying blindly. An explicit rejection can be retried manually after its cause is resolved. No app restart repeats an uncertain merge.
+
+### Update with base branch
+
+Open **Merge…** on a reviewed PR, or **Update branch…** on an unreviewed PR. The **Update with base branch** section compares the current head with the target branch. Its button merges missing base commits into the PR branch using GitHub; it keeps the PR open and does not merge it into the target branch. This is a manual action, independent of automatic merge rules.
+
+Updates require an open PR, write permission, no unresolved conflicts, no active review/publication, and missing base commits. The request pins the previewed head SHA and rechecks the target branch. GitHub enforces fork permissions and branch protections. Already current branches are not updated unnecessarily.
+
+GitHub accepts branch updates asynchronously. Refresh status to see the new head; pending requests are also checked in the background each minute. Pending or uncertain updates block merges and are not resubmitted automatically, including after restarting the app. Network errors may require verifying the outcome on GitHub.
+
+When the head changes, the previous review becomes outdated and cannot authorize a merge. Choose **Queue new review** to review the updated commits immediately, or let your configured discovery workflow queue it. As with merging, GitHub does not provide an atomic target-branch precondition; avoid retargeting while an update is in progress.

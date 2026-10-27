@@ -64,10 +64,14 @@ try {
   await page.getByRole('button', { name: 'Repositories', exact: true }).click();
   await page.getByRole('button', { name: 'Configure', exact: false }).first().click();
   await page.getByLabel('Repository review rules').fill('Preserve the API contract.');
+  const previousPath = await page.getByLabel('Local repository path').inputValue();
+  await page.getByLabel('Local repository path').fill(fixture.root);
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   // The fake fixture is not a real git clone, so repository validation should fail visibly.
   await page.getByRole('status').filter({ hasText: 'git exited' }).waitFor();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByLabel('Local repository path').fill(previousPath);
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Repository saved' }).waitFor();
   await fixture.setClaudeFailure('API Error: 503 Service unavailable');
   await page.request.get(fixture.url + '/api/health');
   await page
@@ -120,6 +124,67 @@ try {
     await page.getByRole('button', { name: 'Pull requests', exact: true }).click();
     await page.getByRole('heading', { name: 'Good code. Clear reviews.' }).waitFor();
   }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await fixture.seedReview('acme/web-app#102');
+  await page.reload();
+  await page.getByRole('button', { name: 'Reviewed', exact: true }).click();
+  await page.getByLabel('Filter verdict').selectOption('NON-BLOCKING');
+  await page.getByLabel('Filter environment').selectOption('PROD');
+  await page.getByLabel('Filter target branch').selectOption('main');
+  assert.equal(await page.locator('.pr-row').count(), 1);
+  await page.locator('.pr-row').getByText('NON-BLOCKING', { exact: true }).waitFor();
+  await page.screenshot({ path: 'build/reviewed-pr-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Latest review', exact: true }).click();
+  await page.getByText('Add coverage for the retry path.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Merge…', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm create a merge commit', exact: true }).waitFor();
+  await page.getByText('Add coverage for the retry path.', { exact: true }).waitFor();
+  await page.getByLabel('Merge method', { exact: true }).selectOption('squash');
+  await page.screenshot({ path: 'build/merge-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Confirm squash and merge', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('.pr-row').count(), 0);
+  const merged = await (await page.request.get(fixture.url + '/api/state')).json();
+  assert.equal(merged.merges[0].method, 'squash');
+  assert.equal(merged.merges[0].status, 'merged');
+  await fixture.seedReview('acme/web-app#103');
+  await page.reload();
+  const updateRow = page
+    .locator('.pr-row')
+    .filter({ has: page.getByText('#103', { exact: true }) })
+    .filter({ has: page.getByText('web-app', { exact: true }) });
+  await updateRow.getByRole('button', { name: 'Merge…', exact: true }).click();
+  await page.getByRole('button', { name: 'Update with base branch', exact: true }).click();
+  await page.getByText('GitHub accepted the branch update.', { exact: false }).waitFor();
+  await page
+    .getByText('NON-BLOCKING', { exact: false })
+    .filter({ hasText: 'Outdated' })
+    .first()
+    .waitFor();
+  assert.equal(
+    await page
+      .getByRole('button', { name: 'Confirm create a merge commit', exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.screenshot({ path: 'build/branch-update-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Queue new review', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  const updatedState = await (await page.request.get(fixture.url + '/api/state')).json();
+  assert.ok(
+    updatedState.jobs.some(
+      (j) => j.pr_id === 'acme/web-app#103' && j.sha === 'd'.repeat(40) && j.status === 'queued',
+    ),
+  );
+  await page.getByRole('button', { name: 'Repositories', exact: true }).click();
+  await page.getByRole('button', { name: 'Configure', exact: false }).first().click();
+  await page.getByRole('button', { name: 'Add automatic merge rule', exact: true }).click();
+  await page.getByLabel('Rule 1 target branch').fill('dev');
+  await page.getByLabel('Rule 1 merge method').selectOption('rebase');
+  await page.getByLabel('NON-BLOCKING BUT FIX', { exact: true }).check();
+  await page.screenshot({ path: 'build/merge-rules-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.route('**/api/state', async (route) => {
     const response = await route.fetch();
     const data = await response.json();
