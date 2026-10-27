@@ -47,6 +47,13 @@ import '@fontsource/manrope/600.css';
 import '@fontsource/manrope/700.css';
 import '@fontsource/manrope/800.css';
 import './styles.css';
+import {
+  Verdict,
+  MergeSettings,
+  MergePreview,
+  INITIAL_MERGE_CONFIG,
+  VERDICTS,
+} from './merge-controls.jsx';
 
 let csrf;
 async function api(url, method = 'GET', body) {
@@ -220,6 +227,10 @@ function App() {
     [search, setSearch] = useState(''),
     [filter, setFilter] = useState('all'),
     [repoFilter, setRepoFilter] = useState('all'),
+    [verdictFilter, setVerdictFilter] = useState('all'),
+    [environmentFilter, setEnvironmentFilter] = useState('all'),
+    [branchFilter, setBranchFilter] = useState('all'),
+    [prSort, setPrSort] = useState('updated'),
     [limit, setLimit] = useState(60),
     [connected, setConnected] = useState(true);
   const fetchInFlight = useRef(false),
@@ -283,7 +294,10 @@ function App() {
       }),
     [],
   );
-  useEffect(() => setLimit(60), [search, filter, repoFilter, page]);
+  useEffect(
+    () => setLimit(60),
+    [search, filter, repoFilter, verdictFilter, environmentFilter, branchFilter, prSort, page],
+  );
   if (!state)
     return (
       <div className="boot">
@@ -351,12 +365,24 @@ function App() {
   const displayed = prs.filter(
     (pr) =>
       (repoFilter === 'all' || pr.repo === repoFilter) &&
+      (verdictFilter === 'all' || (pr.review?.current && pr.review.verdict === verdictFilter)) &&
+      (environmentFilter === 'all' || pr.environment === environmentFilter) &&
+      (branchFilter === 'all' || pr.base_branch === branchFilter) &&
       `${pr.title} ${pr.repo} ${pr.number} ${pr.author} ${pr.base_branch || ''} ${pr.head_branch || ''}`
         .toLowerCase()
         .includes(search.toLowerCase()) &&
       (filter === 'all' ||
         (filter === 'unreviewed' && !pr.reviewed && !statusFor(pr)) ||
+        (filter === 'reviewed' && pr.review?.current) ||
+        (filter === 'outdated' && pr.review && !pr.review.current) ||
         (filter === 'draft' && pr.draft)),
+  );
+  displayed.sort((a, b) =>
+    prSort === 'reviewed'
+      ? (b.review?.finishedAt || '').localeCompare(a.review?.finishedAt || '')
+      : prSort === 'oldest'
+        ? (a.created_at || '').localeCompare(b.created_at || '')
+        : (b.updated_at || '').localeCompare(a.updated_at || ''),
   );
   const nav = [
     ['inbox', 'Pull requests', GitPullRequest, prs.length],
@@ -556,7 +582,7 @@ function App() {
                   <h2>
                     Pull requests <span className="count">{prs.length}</span>
                   </h2>
-                  <p>Find the next change worth a closer look.</p>
+                  <p>See the latest verdict, review changes, and merge when ready.</p>
                 </div>
                 <Button
                   icon={RefreshCw}
@@ -570,7 +596,9 @@ function App() {
                 <div className="tabs">
                   {[
                     ['all', 'All open'],
+                    ['reviewed', 'Reviewed'],
                     ['unreviewed', 'To review'],
+                    ['outdated', 'Outdated reviews'],
                     ['draft', 'Drafts'],
                   ].map(([id, label]) => (
                     <button
@@ -607,6 +635,60 @@ function App() {
                   </select>
                 </div>
               </div>
+              <div className="review-filters">
+                <label>
+                  Verdict
+                  <select
+                    aria-label="Filter verdict"
+                    value={verdictFilter}
+                    onChange={(e) => setVerdictFilter(e.target.value)}
+                  >
+                    <option value="all">All verdicts</option>
+                    {VERDICTS.map((v) => (
+                      <option key={v}>{v}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Environment
+                  <select
+                    aria-label="Filter environment"
+                    value={environmentFilter}
+                    onChange={(e) => setEnvironmentFilter(e.target.value)}
+                  >
+                    <option value="all">All environments</option>
+                    {['DEV', 'PROD', 'OTHER'].map((v) => (
+                      <option key={v}>{v}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Target branch
+                  <select
+                    aria-label="Filter target branch"
+                    value={branchFilter}
+                    onChange={(e) => setBranchFilter(e.target.value)}
+                  >
+                    <option value="all">All branches</option>
+                    {[...new Set(prs.map((p) => p.base_branch).filter(Boolean))].sort().map((b) => (
+                      <option key={b}>{b}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Sort
+                  <select
+                    aria-label="Sort pull requests"
+                    value={prSort}
+                    onChange={(e) => setPrSort(e.target.value)}
+                  >
+                    <option value="updated">Recently updated</option>
+                    <option value="reviewed">Recently reviewed</option>
+                    <option value="oldest">Oldest first</option>
+                  </select>
+                </label>
+                <span>{displayed.length} matching</span>
+              </div>
               {!repos.length ? (
                 <Empty
                   icon={FolderGit2}
@@ -637,11 +719,11 @@ function App() {
                     <div className="table-label">
                       <span>PULL REQUEST</span>
                       <span>CHANGES</span>
-                      <span>STATUS</span>
+                      <span>LATEST VERDICT / STATUS</span>
                       <span />
                     </div>
                     {displayed.slice(0, limit).map((pr) => {
-                      const job = statusFor(pr);
+                      const job = statusFor(pr) || pr.review;
                       return (
                         <div className="pr-row" key={pr.id}>
                           <button
@@ -656,6 +738,11 @@ function App() {
                               <p>
                                 <span className="repo-tag">{pr.repo.split('/')[1]}</span>
                                 <span>#{pr.number}</span>
+                                <span
+                                  className={`environment environment-${(pr.environment || 'OTHER').toLowerCase()}`}
+                                >
+                                  {pr.environment || 'OTHER'}
+                                </span>
                                 {pr.base_branch && (
                                   <span
                                     className="branch-tag"
@@ -679,7 +766,21 @@ function App() {
                             <span>−{pr.deletions.toLocaleString()}</span>
                             <small>{pr.files} files</small>
                           </div>
-                          <div>
+                          <div className="review-status">
+                            <Verdict review={pr.review} />
+                            {pr.review?.action && (
+                              <small className="review-action" title={pr.review.action}>
+                                {pr.review.action}
+                              </small>
+                            )}
+                            {state.mergeChecks?.[pr.id]?.reasons?.[0] && (
+                              <small
+                                className="merge-wait"
+                                title={state.mergeChecks[pr.id].reasons.join(' ')}
+                              >
+                                Merge: {state.mergeChecks[pr.id].reasons[0]}
+                              </small>
+                            )}
                             {job ? (
                               <JobBadge
                                 job={job}
@@ -693,22 +794,28 @@ function App() {
                               <Badge status="open">Open</Badge>
                             )}
                           </div>
-                          <Button
-                            className="row-action"
-                            icon={job ? ChevronRight : Plus}
-                            busy={busy[`queue-${pr.id}`]}
-                            onClick={() =>
-                              job
-                                ? setModal({
-                                    type: 'detail',
-                                    pr,
-                                    jobId: job.id,
-                                  })
-                                : queuePR(pr)
-                            }
-                          >
-                            {job ? 'View' : 'Queue'}
-                          </Button>
+                          <div className="row-action pr-actions">
+                            {pr.review && (
+                              <Button onClick={() => setModal({ type: 'merge', pr })}>
+                                Merge…
+                              </Button>
+                            )}
+                            <Button
+                              icon={job ? ChevronRight : Plus}
+                              busy={busy[`queue-${pr.id}`]}
+                              onClick={() =>
+                                job
+                                  ? setModal({
+                                      type: 'detail',
+                                      pr,
+                                      jobId: job.id,
+                                    })
+                                  : queuePR(pr)
+                              }
+                            >
+                              {job ? 'View' : 'Queue'}
+                            </Button>
+                          </div>
                         </div>
                       );
                     })}
@@ -719,6 +826,45 @@ function App() {
                     </div>
                   )}
                 </>
+              )}
+              {(state.merges || []).length > 0 && (
+                <details className="merge-history">
+                  <summary>Recent merge attempts · {state.merges.length}</summary>
+                  {state.merges.slice(0, 10).map((attempt) => (
+                    <div key={attempt.id}>
+                      <span>
+                        <b>{attempt.pr_id}</b>
+                        <small>
+                          {attempt.automatic ? 'Automatic' : 'Manual'} · {attempt.method} · into{' '}
+                          {attempt.base_branch} · {relative(attempt.created_at)}
+                        </small>
+                        {attempt.error && <small className="error-text">{attempt.error}</small>}
+                      </span>
+                      <span
+                        className={`verdict ${attempt.status === 'merged' ? 'verdict-clear' : 'verdict-followup'}`}
+                      >
+                        {attempt.status === 'unknown' ? 'Verify outcome' : attempt.status}
+                      </span>
+                      {attempt.status !== 'merged' && (
+                        <Button
+                          onClick={() =>
+                            setModal({
+                              type: 'merge',
+                              pr: {
+                                id: attempt.pr_id,
+                                repo: attempt.pr_id.split('#')[0],
+                                number: Number(attempt.pr_id.split('#')[1]),
+                                title: 'Verify the latest merge status',
+                              },
+                            })
+                          }
+                        >
+                          Check status
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </details>
               )}
               <div className="panel-footer">
                 <span>
@@ -1090,6 +1236,18 @@ function App() {
       {modal?.type === 'removeRepo' && (
         <RemoveRepo repo={modal.repo} close={() => setModal(null)} action={action} busy={busy} />
       )}
+      {modal?.type === 'merge' && (
+        <MergePreview
+          pr={modal.pr}
+          api={api}
+          Modal={Modal}
+          Button={Button}
+          onMerged={async () => {
+            setModal(null);
+            await refresh();
+          }}
+        />
+      )}
       {modal?.type === 'detail' && (
         <Detail
           modal={modal}
@@ -1330,6 +1488,9 @@ function RepoModal({ repo, state, close, action, busy }) {
     [instructions, setInstructions] = useState(repo?.instructions || ''),
     [mode, setMode] = useState('existing'),
     [checks, setChecks] = useState(JSON.parse(repo?.checks || '{}')),
+    [mergeConfig, setMergeConfig] = useState(
+      repo?.merge_config ? JSON.parse(repo.merge_config) : structuredClone(INITIAL_MERGE_CONFIG),
+    ),
     [owner, setOwner] = useState(state.health?.github?.output || ''),
     [available, setAvailable] = useState(null),
     [query, setQuery] = useState('');
@@ -1353,8 +1514,18 @@ function RepoModal({ repo, state, close, action, busy }) {
                   instructions,
                   checks,
                 });
-              await api('/api/repos', 'POST', { id, path: localPath });
-              return api('/api/repos', 'PATCH', { id, instructions, checks });
+              if (!repo) await api('/api/repos', 'POST', { id, path: localPath });
+              return api('/api/repos', 'PATCH', {
+                id,
+                instructions,
+                checks,
+                ...(repo ? { path: localPath } : {}),
+                mergeConfig: {
+                  ...mergeConfig,
+                  devBranches: mergeConfig.devBranches.map((b) => b.trim()).filter(Boolean),
+                  prodBranches: mergeConfig.prodBranches.map((b) => b.trim()).filter(Boolean),
+                },
+              });
             },
             mode === 'clone' ? 'Cloning started. Track progress in Activity.' : 'Repository saved',
           );
@@ -1473,6 +1644,7 @@ function RepoModal({ repo, state, close, action, busy }) {
           </label>
         </div>
         <TemplatePicker templates={state.templates} onSelect={setInstructions} />
+        {repo && <MergeSettings value={mergeConfig} onChange={setMergeConfig} />}
         <label>
           Repository review rules
           <textarea

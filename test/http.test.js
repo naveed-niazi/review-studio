@@ -31,7 +31,7 @@ export async function startFixture() {
   ];
   await writeFile(
     path.join(bin, 'gh'),
-    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='api'&&args[1]==='user'){console.log(args.includes('--jq')?'dev-user':JSON.stringify({login:'dev-user'}));}else if(args[0]==='pr'&&args[1]==='list'){const repo=args[args.indexOf('--repo')+1];setTimeout(()=>console.log(JSON.stringify(${JSON.stringify(titles)}.map((title,i)=>({number:i+101,title,headRefOid:'a'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/'+repo+'/pull/'+(i+101),author:{login:['alex','sarah','jordan'][i%3]},isDraft:i===4,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),additions:48+i*21,deletions:12+i*3,changedFiles:3+i})))),1500);}else if(args[0]==='pr'&&args[1]==='view'){console.log(JSON.stringify({number:Number(args[2]),title:'Test pull request',headRefOid:'a'.repeat(40),baseRefOid:'b'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/acme/web-app/pull/'+args[2],state:'OPEN',author:{login:'alex'},body:'## Summary\\nA focused feature change.',additions:48,deletions:12}));}else if(args[0]==='repo'&&args[1]==='list'){console.log(JSON.stringify([{nameWithOwner:'acme/new-project',description:'A new project',isPrivate:true}]));}else if(args[0]==='api'){console.log(JSON.stringify([[{filename:'src/auth.ts',additions:4,deletions:1,patch:'@@ -1 +1 @@\\n-old\\n+new'}]]));}else if(args[0]==='auth'){console.log('Already authenticated');}else process.exit(2);`,
+    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='api'&&args[1]==='user'){console.log(args.includes('--jq')?'dev-user':JSON.stringify({login:'dev-user'}));}else if(args[0]==='pr'&&args[1]==='list'){const repo=args[args.indexOf('--repo')+1];setTimeout(()=>console.log(JSON.stringify(${JSON.stringify(titles)}.map((title,i)=>({number:i+101,title,headRefOid:'a'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/'+repo+'/pull/'+(i+101),author:{login:['alex','sarah','jordan'][i%3]},isDraft:i===4,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),additions:48+i*21,deletions:12+i*3,changedFiles:3+i})))),1500);}else if(args[0]==='pr'&&args[1]==='view'){console.log(JSON.stringify({number:Number(args[2]),title:'Test pull request',headRefOid:'a'.repeat(40),baseRefOid:'b'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/acme/web-app/pull/'+args[2],state:'OPEN',isDraft:false,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'APPROVED',statusCheckRollup:[],author:{login:'alex'},body:'## Summary\\nA focused feature change.',additions:48,deletions:12}));}else if(args[0]==='repo'&&args[1]==='list'){console.log(JSON.stringify([{nameWithOwner:'acme/new-project',description:'A new project',isPrivate:true}]));}else if(args[0]==='api'&&args.includes('PUT')&&args[1].endsWith('/merge')){let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{require('node:fs').appendFileSync(${JSON.stringify(path.join(root, 'merge-requests.jsonl'))},input+'\\n');console.log(JSON.stringify({merged:true,sha:'c'.repeat(40)}));});}else if(args[0]==='api'&&/^repos\\/[^/]+\\/[^/]+$/.test(args[1])){console.log(JSON.stringify({permissions:{push:true},allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true}));}else if(args[0]==='api'){console.log(JSON.stringify([[{filename:'src/auth.ts',additions:4,deletions:1,patch:'@@ -1 +1 @@\\n-old\\n+new'}]]));}else if(args[0]==='auth'){console.log('Already authenticated');}else process.exit(2);`,
     { mode: 0o755 },
   );
   await writeFile(
@@ -73,6 +73,24 @@ export async function startFixture() {
   return {
     url,
     root,
+    seedReview: async (prId, verdict = 'NON-BLOCKING') => {
+      const store = createStore(path.join(root, 'data'));
+      try {
+        const id = store.enqueue(prId);
+        store.db
+          .prepare(
+            "UPDATE jobs SET status='published',reviewed_base_branch=(SELECT base_branch FROM prs WHERE prs.id=jobs.pr_id),result=?,finished_at=? WHERE id=?",
+          )
+          .run(
+            `**Verdict: ${verdict}**\n\n**Action:** Merge with a follow-up test.\n\nAdd coverage for the retry path.`,
+            new Date().toISOString(),
+            id,
+          );
+        return id;
+      } finally {
+        store.db.close();
+      }
+    },
     setClaudeFailure: async (message) => {
       await writeFile(
         path.join(bin, 'claude'),
@@ -237,4 +255,128 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
     const recovered = await (await fetch(app.url + '/api/health')).json();
     assert.equal(recovered.claude.ok, true);
     assert.equal((await (await fetch(app.url + '/api/state')).json()).settings.paused, true);
+  });
+
+if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
+  test('merge API shows the latest review, validates rules, requires confirmation data and CSRF, and merges the pinned commit', async (t) => {
+    const app = await startFixture();
+    t.after(() => app.stop());
+    for (let i = 0; i < 150; i++) {
+      if (
+        (await (await fetch(app.url + '/api/state')).json()).prs.some(
+          (p) => p.id === 'acme/web-app#102',
+        )
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const id = await app.seedReview('acme/web-app#102');
+    const state = await (await fetch(app.url + '/api/state')).json();
+    const pr = state.prs.find((p) => p.id === 'acme/web-app#102');
+    assert.equal(pr.review.verdict, 'NON-BLOCKING');
+    assert.equal(pr.review.current, true);
+    assert.equal(pr.environment, 'PROD');
+    const body = { prId: pr.id, sha: pr.sha, baseBranch: 'main', reviewId: id, method: 'squash' };
+    assert.equal(
+      (
+        await fetch(app.url + '/api/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).status,
+      403,
+    );
+    const { token } = await (await fetch(app.url + '/api/session')).json();
+    const headers = { 'Content-Type': 'application/json', 'X-Studio-Token': token };
+    const rules = {
+      devBranches: ['dev'],
+      prodBranches: ['main'],
+      rules: [{ baseBranch: 'dev', verdicts: ['LGTM'], method: 'merge' }],
+    };
+    assert.equal(
+      (
+        await fetch(app.url + '/api/repos', {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ id: 'acme/web-app', mergeConfig: rules }),
+        })
+      ).status,
+      200,
+    );
+    const invalid = structuredClone(rules);
+    invalid.rules[0].verdicts = ['BLOCKING'];
+    assert.equal(
+      (
+        await fetch(app.url + '/api/repos', {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ id: 'acme/web-app', mergeConfig: invalid }),
+        })
+      ).status,
+      400,
+    );
+    const updated = await (await fetch(app.url + '/api/state')).json();
+    assert.deepEqual(
+      JSON.parse(updated.repos.find((r) => r.id === 'acme/web-app').merge_config),
+      rules,
+    );
+    await fetch(app.url + '/api/repos', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ id: 'acme/web-app', enabled: false }),
+    });
+    const invalidSave = await fetch(app.url + '/api/repos', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        id: 'acme/web-app',
+        mergeConfig: { ...rules, rules: [] },
+        instructions: 'x'.repeat(50001),
+      }),
+    });
+    assert.equal(invalidSave.status, 400);
+    await fetch(app.url + '/api/repos', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ id: 'acme/web-app', mergeConfig: rules }),
+    });
+    const savedRepo = (await (await fetch(app.url + '/api/state')).json()).repos.find(
+      (r) => r.id === 'acme/web-app',
+    );
+    assert.equal(savedRepo.enabled, 0, 'editing rules must not enable a disabled repository');
+    assert.deepEqual(
+      JSON.parse(savedRepo.merge_config),
+      rules,
+      'invalid settings do not partially change merge policy',
+    );
+    await fetch(app.url + '/api/repos', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ id: 'acme/web-app', enabled: true }),
+    });
+    const info = await (await fetch(app.url + '/api/merge?id=' + encodeURIComponent(pr.id))).json();
+    assert.deepEqual(info.reasons, []);
+    assert.deepEqual(info.allowedMethods, ['merge', 'squash', 'rebase']);
+    assert.equal(
+      (
+        await fetch(app.url + '/api/merge', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ ...body, sha: 'b'.repeat(40) }),
+        })
+      ).status,
+      400,
+    );
+    const response = await fetch(app.url + '/api/merge', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).merged, true);
+    const final = await (await fetch(app.url + '/api/state')).json();
+    assert.ok(!final.prs.some((p) => p.id === pr.id));
+    assert.equal(final.merges[0].status, 'merged');
+    assert.equal(final.merges[0].method, 'squash');
   });

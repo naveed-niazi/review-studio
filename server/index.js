@@ -8,6 +8,14 @@ import { realpath, stat, mkdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createStore, defaults, now } from './store.js';
 import { validateChecks } from './rules.js';
+import {
+  MergeService,
+  mergeConfig,
+  latestReview,
+  reviewSummary,
+  environmentFor,
+  validateMergeConfig,
+} from './merging.js';
 import { Engine } from './engine.js';
 import { ConnectionMonitor } from './connections.js';
 import { run, parsePR, remoteRepo, abortAllProcesses, isRepository } from './process.js';
@@ -75,6 +83,7 @@ const engine = new Engine(store, {
   notify,
   env: () => (apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
 });
+const merging = new MergeService(store, engine, { notify });
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   const host = req.headers.host || '';
@@ -142,11 +151,21 @@ app.get('/api/state', (_req, res) =>
   res.json({
     settings: store.settings(),
     repos: store.db.prepare('SELECT * FROM repos WHERE archived=0 ORDER BY id').all(),
+    mergeChecks: Object.fromEntries(merging.checks),
+    merges: store.db.prepare('SELECT * FROM merges ORDER BY rowid DESC LIMIT 100').all(),
     prs: store.db
       .prepare(
         `SELECT p.*, EXISTS(SELECT 1 FROM jobs j WHERE j.pr_id=p.id AND j.sha=p.sha AND j.status IN ('awaiting_approval','published','publish_failed','publishing')) AS reviewed FROM prs p JOIN repos r ON r.id=p.repo WHERE p.state='OPEN' AND r.enabled=1 ORDER BY p.updated_at DESC`,
       )
-      .all(),
+      .all()
+      .map((pr) => ({
+        ...pr,
+        review: reviewSummary(latestReview(store, pr.id), pr.sha, pr.base_branch),
+        environment: environmentFor(
+          store.db.prepare('SELECT * FROM repos WHERE id=?').get(pr.repo),
+          pr.base_branch,
+        ),
+      })),
     jobs: store.db
       .prepare(
         `SELECT j.id,j.pr_id,j.sha,j.status,j.position,j.instructions,j.policy,j.model,j.effort,j.created_at,j.started_at,j.finished_at,j.phase,j.error,j.published_url,j.cost,j.retry_count,j.retry_at,j.failure_kind,j.failure_provider,j.recovery_check_at,j.recovery_note,j.recovery_pending,j.recovery_count,p.state AS pr_state,p.repo,p.number,p.title,p.url,p.author,p.base_branch,p.head_branch,p.sha AS current_sha FROM jobs j JOIN prs p ON p.id=j.pr_id WHERE j.status IN ('queued','running','publishing') OR j.id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500) ORDER BY j.created_at DESC`,
@@ -364,7 +383,9 @@ app.post(
         );
       await rm(local, { recursive: true });
     }
-    store.db.prepare('UPDATE repos SET archived=1,enabled=0 WHERE id=?').run(id);
+    store.db
+      .prepare('UPDATE repos SET archived=1,enabled=0,merge_config=? WHERE id=?')
+      .run(JSON.stringify({ ...mergeConfig(repo), rules: [] }), id);
     engine.log(
       'info',
       `Removed ${id} from connected repositories${req.body.deleteClone ? ' and deleted its app-managed clone' : ''}. Review history retained.`,
@@ -377,18 +398,41 @@ app.patch(
   '/api/repos',
   wrap(async (req, res) => {
     const id = text(req.body.id, 200);
-    if (!store.db.prepare('SELECT id FROM repos WHERE id=?').get(id))
-      throw new Error('Repository not found.');
-    if (req.body.checks !== undefined)
-      store.db
-        .prepare('UPDATE repos SET checks=? WHERE id=?')
-        .run(JSON.stringify(validateChecks(req.body.checks)), id);
-    if (req.body.enabled !== undefined)
-      store.db.prepare('UPDATE repos SET enabled=? WHERE id=?').run(+boolean(req.body.enabled), id);
-    if (req.body.instructions !== undefined)
-      store.db
-        .prepare('UPDATE repos SET instructions=? WHERE id=?')
-        .run(text(req.body.instructions, 50000), id);
+    const existing = store.db.prepare('SELECT * FROM repos WHERE id=? AND archived=0').get(id);
+    if (!existing) throw new Error('Repository not found.');
+    const config =
+      req.body.mergeConfig === undefined ? undefined : validateMergeConfig(req.body.mergeConfig);
+    const checks = req.body.checks === undefined ? undefined : validateChecks(req.body.checks);
+    const enabled = req.body.enabled === undefined ? undefined : boolean(req.body.enabled);
+    const instructions =
+      req.body.instructions === undefined ? undefined : text(req.body.instructions, 50000);
+    let localPath;
+    if (req.body.path !== undefined && req.body.path !== existing.path) {
+      localPath = await realpath(text(req.body.path, 2000).replace(/^~(?=\/)/, os.homedir()));
+      if (!(await stat(localPath)).isDirectory())
+        throw new Error('Choose a local repository directory.');
+      const remote = await run('git', ['-C', localPath, 'remote', 'get-url', 'origin']);
+      if (remoteRepo(remote)?.toLowerCase() !== id.toLowerCase())
+        throw new Error('The local repository origin must match the GitHub repository.');
+    }
+    store.transaction(() => {
+      if (localPath !== undefined)
+        store.db
+          .prepare(
+            'UPDATE repos SET managed=CASE WHEN path=? THEN managed ELSE 0 END,path=?,error=NULL WHERE id=?',
+          )
+          .run(localPath, localPath, id);
+      if (config !== undefined)
+        store.db
+          .prepare('UPDATE repos SET merge_config=? WHERE id=?')
+          .run(JSON.stringify(config), id);
+      if (checks !== undefined)
+        store.db.prepare('UPDATE repos SET checks=? WHERE id=?').run(JSON.stringify(checks), id);
+      if (enabled !== undefined)
+        store.db.prepare('UPDATE repos SET enabled=? WHERE id=?').run(+enabled, id);
+      if (instructions !== undefined)
+        store.db.prepare('UPDATE repos SET instructions=? WHERE id=?').run(instructions, id);
+    });
     notify();
     res.json({ ok: true });
   }),
@@ -498,6 +542,29 @@ app.get(
         patch: f.patch,
       })),
     });
+  }),
+);
+app.get(
+  '/api/merge',
+  wrap(async (req, res) => {
+    const id = text(req.query.id, 300);
+    parsePR(id);
+    res.json(await merging.inspect(id));
+  }),
+);
+app.post(
+  '/api/merge',
+  wrap(async (req, res) => {
+    const id = text(req.body.prId, 300);
+    parsePR(id);
+    res.json(
+      await merging.merge(id, {
+        sha: text(req.body.sha, 64),
+        baseBranch: text(req.body.baseBranch, 200),
+        reviewId: text(req.body.reviewId, 100),
+        method: text(req.body.method, 20),
+      }),
+    );
   }),
 );
 app.post(
@@ -622,6 +689,11 @@ const recoveryTimer = setInterval(() => {
 const healthTimer = setInterval(() => {
   void health().catch((error) => engine.log('error', `Connection check failed: ${error.message}`));
 }, 1500);
+const mergeTimer = setInterval(() => {
+  void merging
+    .tick()
+    .catch((error) => engine.log('error', `Automatic merge check failed: ${error.message}`));
+}, 60000);
 let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
@@ -630,6 +702,7 @@ const shutdown = async () => {
   clearInterval(ticker);
   clearInterval(healthTimer);
   clearInterval(recoveryTimer);
+  clearInterval(mergeTimer);
   connections.close();
   authSession?.child.kill('SIGTERM');
   for (const c of clients) c.end();
