@@ -134,6 +134,9 @@ try {
   assert.equal(await page.locator('.pr-row').count(), 1);
   await page.locator('.pr-row').getByText('NON-BLOCKING', { exact: true }).waitFor();
   await page.screenshot({ path: 'build/reviewed-pr-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Latest review', exact: true }).click();
+  await page.getByText('Add coverage for the retry path.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.getByRole('button', { name: 'Merge…', exact: true }).click();
   await page.getByRole('button', { name: 'Confirm create a merge commit', exact: true }).waitFor();
   await page.getByText('Add coverage for the retry path.', { exact: true }).waitFor();
@@ -145,6 +148,35 @@ try {
   const merged = await (await page.request.get(fixture.url + '/api/state')).json();
   assert.equal(merged.merges[0].method, 'squash');
   assert.equal(merged.merges[0].status, 'merged');
+  await fixture.seedReview('acme/web-app#103');
+  await page.reload();
+  const updateRow = page
+    .locator('.pr-row')
+    .filter({ has: page.getByText('#103', { exact: true }) })
+    .filter({ has: page.getByText('web-app', { exact: true }) });
+  await updateRow.getByRole('button', { name: 'Merge…', exact: true }).click();
+  await page.getByRole('button', { name: 'Update with base branch', exact: true }).click();
+  await page.getByText('GitHub accepted the branch update.', { exact: false }).waitFor();
+  await page
+    .getByText('NON-BLOCKING', { exact: false })
+    .filter({ hasText: 'Outdated' })
+    .first()
+    .waitFor();
+  assert.equal(
+    await page
+      .getByRole('button', { name: 'Confirm create a merge commit', exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.screenshot({ path: 'build/branch-update-preview.png', fullPage: true });
+  await page.getByRole('button', { name: 'Queue new review', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  const updatedState = await (await page.request.get(fixture.url + '/api/state')).json();
+  assert.ok(
+    updatedState.jobs.some(
+      (j) => j.pr_id === 'acme/web-app#103' && j.sha === 'd'.repeat(40) && j.status === 'queued',
+    ),
+  );
   await page.getByRole('button', { name: 'Repositories', exact: true }).click();
   await page.getByRole('button', { name: 'Configure', exact: false }).first().click();
   await page.getByRole('button', { name: 'Add automatic merge rule', exact: true }).click();

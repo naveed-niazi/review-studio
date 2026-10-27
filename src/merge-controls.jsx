@@ -137,6 +137,8 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
     [error, setError] = useState(''),
     [loading, setLoading] = useState(false),
     [merging, setMerging] = useState(false),
+    [updating, setUpdating] = useState(false),
+    [notice, setNotice] = useState(''),
     [method, setMethod] = useState('merge'),
     [reviewText, setReviewText] = useState('');
   const refresh = async () => {
@@ -181,17 +183,55 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
       setMerging(false);
     }
   };
+  const queueReview = async () => {
+    setUpdating(true);
+    setError('');
+    try {
+      await api('/api/jobs', 'POST', { prId: pr.id });
+      await onMerged();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setUpdating(false);
+    }
+  };
+  const updateBranch = async () => {
+    setUpdating(true);
+    setError('');
+    setNotice('');
+    try {
+      await api('/api/update-branch', 'POST', {
+        prId: pr.id,
+        sha: info.sha,
+        baseBranch: info.baseBranch,
+      });
+      setNotice(
+        'GitHub accepted the branch update. Refresh status to see the new commits, then request a fresh review.',
+      );
+      await refresh();
+    } catch (e) {
+      setError(e.message);
+      setInfo(null);
+    } finally {
+      setUpdating(false);
+    }
+  };
   return (
     <Modal
       wide
-      title={`Merge ${pr.repo} #${pr.number}`}
+      title={`PR actions · ${pr.repo} #${pr.number}`}
       description={pr.title}
-      onClose={merging ? () => {} : onMerged}
+      onClose={merging || updating ? () => {} : onMerged}
     >
       {loading && <p role="status">Checking GitHub merge requirements…</p>}
       {error && (
         <p role="alert" className="error-banner">
           {error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" className="merge-help">
+          {notice}
         </p>
       )}
       {info && (
@@ -213,6 +253,48 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
               </ul>
             </div>
           )}
+          {info.update && (
+            <section className="branch-update">
+              <h3>Update with base branch</h3>
+              <p className="merge-help">
+                Merge the latest commits from <strong>{info.baseBranch}</strong> into{' '}
+                <strong>{info.headBranch}</strong>. This updates the PR branch, keeps it open, and
+                requires a fresh review before merging its new commits.
+              </p>
+              {info.update.reasons.map((reason) => (
+                <p className="merge-help" key={reason}>
+                  {reason}
+                </p>
+              ))}
+              {info.update.behind > 0 && (
+                <p className="merge-help">
+                  {info.update.behind} base branch commit{info.update.behind === 1 ? '' : 's'} to
+                  bring in.
+                </p>
+              )}
+              <Button
+                busy={updating}
+                disabled={loading || merging || updating || info.update.reasons.length > 0}
+                onClick={updateBranch}
+              >
+                Update with base branch
+              </Button>
+            </section>
+          )}
+          {(!info.review || !info.review.current || !info.review.baseBranch) &&
+            info.state === 'OPEN' && (
+              <Button
+                disabled={
+                  loading ||
+                  updating ||
+                  merging ||
+                  ['updating', 'pending', 'unknown'].includes(info.update?.attempt?.status)
+                }
+                onClick={queueReview}
+              >
+                Queue new review
+              </Button>
+            )}
           <details className="merge-review" open>
             <summary>
               Latest review
@@ -241,7 +323,7 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
             <select
               aria-label="Merge method"
               value={method}
-              disabled={merging}
+              disabled={merging || updating}
               onChange={(e) => setMethod(e.target.value)}
             >
               {Object.entries(MERGE_METHODS).map(([value, label]) => (
@@ -259,7 +341,7 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
         </>
       )}
       <div className="modal-actions">
-        <Button disabled={loading || merging} onClick={refresh}>
+        <Button disabled={loading || merging || updating} onClick={refresh}>
           Refresh merge status
         </Button>
         <Button
@@ -269,6 +351,7 @@ export function MergePreview({ pr, api, onMerged, Modal, Button }) {
             !info ||
             loading ||
             merging ||
+            updating ||
             info.reasons.length > 0 ||
             !info.allowedMethods.includes(method)
           }

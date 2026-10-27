@@ -118,12 +118,12 @@ export class MergeService {
     const job = latestReview(this.s, prId);
     const latest = this.s.db
       .prepare(
-        "SELECT id FROM jobs WHERE pr_id=? AND status NOT IN ('cancelled','skipped') ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        "SELECT id,status FROM jobs WHERE pr_id=? AND status NOT IN ('cancelled','skipped') ORDER BY created_at DESC,rowid DESC LIMIT 1",
       )
       .get(prId);
     return { pr, repo, job, review: reviewSummary(job, pr.sha, pr.base_branch), latest };
   }
-  async inspect(prId) {
+  async inspect(prId, { includeUpdate = false } = {}) {
     const local = this.local(prId);
     const [pr, repo] = await Promise.all([
       this.e.gh([
@@ -147,8 +147,20 @@ export class MergeService {
           "UPDATE merges SET status='merged',error=NULL WHERE pr_id=? AND sha=? AND status IN ('merging','unknown')",
         )
         .run(prId, pr.headRefOid);
+    this.s.db
+      .prepare(
+        "UPDATE branch_updates SET status='head_changed',error=NULL WHERE pr_id=? AND sha<>? AND status IN ('updating','pending','unknown')",
+      )
+      .run(prId, pr.headRefOid);
+    const branchUpdate = this.s.db
+      .prepare('SELECT * FROM branch_updates WHERE pr_id=? ORDER BY rowid DESC LIMIT 1')
+      .get(prId);
+    const updatePending =
+      branchUpdate && ['updating', 'pending', 'unknown'].includes(branchUpdate.status);
     const current = this.local(prId);
     const reasons = [];
+    if (updatePending)
+      reasons.push('A branch update is pending or uncertain. Refresh status before merging.');
     if (!current.repo.enabled || current.repo.archived) reasons.push('Repository is disabled.');
     if (pr.state !== 'OPEN') reasons.push('PR is no longer open.');
     if (pr.isDraft) reasons.push('PR is a draft.');
@@ -207,7 +219,47 @@ export class MergeService {
         ] === true,
     );
     if (!allowedMethods.length) reasons.push('No merge method is available.');
+    let update;
+    if (includeUpdate) {
+      const updateReasons = [];
+      if (
+        !current.repo.enabled ||
+        current.repo.archived ||
+        !repo.permissions?.push ||
+        repo.archived
+      )
+        updateReasons.push('Repository is disabled or your account lacks write permission.');
+      if (pr.state !== 'OPEN') updateReasons.push('PR is no longer open.');
+      if (['queued', 'running', 'publishing'].includes(current.latest?.status))
+        updateReasons.push(
+          'Wait for the active review or publication to finish before updating this branch.',
+        );
+      if (pr.mergeable !== 'MERGEABLE')
+        updateReasons.push('Resolve conflicts or wait for GitHub to calculate mergeability.');
+      if (updatePending)
+        updateReasons.push(
+          branchUpdate.status === 'unknown'
+            ? 'The previous update has an uncertain outcome. Verify it on GitHub and refresh status.'
+            : 'GitHub is processing the branch update. Refresh status shortly.',
+        );
+      if (attempt && ['merging', 'unknown'].includes(attempt.status))
+        updateReasons.push('Resolve the previous merge outcome first.');
+      let behind = null;
+      if (!updateReasons.length) {
+        const comparison = await this.e.gh([
+          'api',
+          `repos/${local.pr.repo}/compare/${pr.headRefOid}...${pr.baseRefOid}`,
+        ]);
+        behind = comparison.ahead_by;
+        if (!Number.isInteger(behind) || behind < 0)
+          updateReasons.push('Base branch comparison is unavailable.');
+        else if (behind === 0)
+          updateReasons.push('This PR branch already contains the latest base branch commits.');
+      }
+      update = { reasons: updateReasons, behind, attempt: branchUpdate || null };
+    }
     const result = {
+      update,
       sha: pr.headRefOid,
       baseBranch: pr.baseRefName,
       headBranch: pr.headRefName,
@@ -329,6 +381,88 @@ export class MergeService {
       throw error;
     } finally {
       this.locks.delete(prId);
+      this.notify();
+    }
+  }
+  async updateBase(prId, { sha, baseBranch }) {
+    if (this.locks.has(prId)) throw new Error('A PR operation is already in progress.');
+    this.locks.add(prId);
+    let id;
+    try {
+      const info = await this.inspect(prId, { includeUpdate: true });
+      if (info.sha !== sha || info.baseBranch !== baseBranch)
+        throw new Error('PR changed. Refresh the branch update preview.');
+      if (info.update.reasons.length) throw new Error(info.update.reasons.join(' '));
+      const current = this.local(prId);
+      if (
+        this.e.closing ||
+        !current.repo.enabled ||
+        current.repo.archived ||
+        current.pr.sha !== sha ||
+        current.pr.base_branch !== baseBranch
+      )
+        throw new Error('Repository or PR changed. Refresh before updating.');
+      id = randomUUID();
+      this.s.db
+        .prepare(
+          "INSERT INTO branch_updates (id,pr_id,sha,base_branch,status,created_at) VALUES (?,?,?,?,'updating',?)",
+        )
+        .run(id, prId, sha, baseBranch, new Date(this.clock()).toISOString());
+      this.notify();
+      await this.e.gh(
+        [
+          'api',
+          `repos/${current.pr.repo}/pulls/${current.pr.number}/update-branch`,
+          '--method',
+          'PUT',
+          '--input',
+          '-',
+        ],
+        { input: JSON.stringify({ expected_head_sha: sha }), timeout: 30000 },
+      );
+      this.s.db.prepare("UPDATE branch_updates SET status='pending' WHERE id=?").run(id);
+      this.e.log(
+        'info',
+        `Requested an update of ${prId} from ${baseBranch}. A new review is needed once its commits change.`,
+      );
+      return { accepted: true };
+    } catch (error) {
+      if (id) {
+        const rejected = [401, 403, 404, 405, 409, 422, 429].includes(
+          classifyFailure(error, 'github').status,
+        );
+        this.s.db
+          .prepare('UPDATE branch_updates SET status=?,error=? WHERE id=?')
+          .run(rejected ? 'failed' : 'unknown', error.message, id);
+      }
+      throw error;
+    } finally {
+      this.locks.delete(prId);
+      this.notify();
+    }
+  }
+  async refreshUpdates() {
+    if (this.refreshingUpdates || this.e.closing || !this.e.canSync()) return;
+    this.refreshingUpdates = true;
+    try {
+      const updates = this.s.db
+        .prepare(
+          "SELECT DISTINCT u.pr_id FROM branch_updates u JOIN prs p ON p.id=u.pr_id WHERE u.status IN ('pending','unknown') AND p.state='OPEN' ORDER BY u.rowid DESC",
+        )
+        .all();
+      const start = (this.updateCursor || 0) % Math.max(1, updates.length);
+      this.updateCursor = start + Math.min(5, updates.length);
+      for (let i = 0; i < Math.min(5, updates.length); i++) {
+        const { pr_id } = updates[(start + i) % updates.length];
+        if (this.e.closing || !this.e.canSync()) break;
+        try {
+          await this.inspect(pr_id);
+        } catch {
+          /* Keep the durable pending state until GitHub can be reached. */
+        }
+      }
+    } finally {
+      this.refreshingUpdates = false;
       this.notify();
     }
   }

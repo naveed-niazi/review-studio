@@ -71,6 +71,7 @@ async function fixture(t) {
     gh: async (args, opts) => {
       calls.push({ args, opts });
       if (args.includes('PUT')) return { merged: true, sha: 'c'.repeat(40) };
+      if (args[1]?.includes('/compare/')) return { ahead_by: 2 };
       return structuredClone(args[0] === 'pr' ? pr : repo);
     },
   };
@@ -321,6 +322,65 @@ test('restart retains merge history and marks interrupted requests uncertain', a
     assert.equal(reopened.db.prepare('SELECT status FROM merges').get().status, 'unknown');
     await new MergeService(reopened, f.e).tick();
     assert.equal(writes(f).length, 0);
+  } finally {
+    reopened.db.close();
+  }
+});
+
+test('base update pins the head, blocks merging while pending, and invalidates the old review after refresh', async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.m.inspect('owner/repo#1', { includeUpdate: true })).update.behind, 2);
+  await f.m.updateBase('owner/repo#1', f.request);
+  assert.deepEqual(JSON.parse(writes(f)[0].opts.input), { expected_head_sha: sha });
+  assert.ok(writes(f)[0].args[1].endsWith('/update-branch'));
+  await assert.rejects(f.m.merge('owner/repo#1', f.request), /branch update/);
+  await assert.rejects(f.m.updateBase('owner/repo#1', f.request), /processing/);
+  assert.equal(writes(f).length, 1);
+  f.pr.headRefOid = 'd'.repeat(40);
+  await f.m.refreshUpdates();
+  assert.equal(f.s.db.prepare('SELECT status FROM branch_updates').get().status, 'head_changed');
+  assert.equal(f.m.local('owner/repo#1').review.current, false);
+  await assert.rejects(
+    f.m.merge('owner/repo#1', { ...f.request, sha: f.pr.headRefOid }),
+    /new review/,
+  );
+});
+for (const [name, mutate] of [
+  ['changed head', (f) => (f.pr.headRefOid = base)],
+  ['retargeted PR', (f) => (f.pr.baseRefName = 'main')],
+  ['closed PR', (f) => (f.pr.state = 'CLOSED')],
+  ['conflicts', (f) => (f.pr.mergeable = 'CONFLICTING')],
+  ['missing permissions', (f) => (f.repo.permissions.push = false)],
+  ['active review', (f) => f.s.enqueue('owner/repo#1')],
+])
+  test(`branch update refuses ${name}`, async (t) => {
+    const f = await fixture(t);
+    mutate(f);
+    await assert.rejects(f.m.updateBase('owner/repo#1', f.request));
+    assert.equal(writes(f).length, 0);
+  });
+test('up-to-date branches do not receive unnecessary merge commits', async (t) => {
+  const f = await fixture(t),
+    original = f.e.gh;
+  f.e.gh = async (args, opts) =>
+    args[1]?.includes('/compare/') ? { ahead_by: 0 } : original(args, opts);
+  await assert.rejects(f.m.updateBase('owner/repo#1', f.request), /already contains/);
+  assert.equal(writes(f).length, 0);
+});
+test('lost update response survives restart and is never resubmitted', async (t) => {
+  const f = await fixture(t),
+    original = f.e.gh;
+  f.e.gh = async (args, opts) => {
+    const result = await original(args, opts);
+    if (args.includes('PUT')) throw new Error('Connection lost');
+    return result;
+  };
+  await assert.rejects(f.m.updateBase('owner/repo#1', f.request), /Connection lost/);
+  const reopened = createStore(f.dir);
+  try {
+    const service = new MergeService(reopened, f.e);
+    await assert.rejects(service.updateBase('owner/repo#1', f.request), /uncertain outcome/);
+    assert.equal(writes(f).length, 1);
   } finally {
     reopened.db.close();
   }

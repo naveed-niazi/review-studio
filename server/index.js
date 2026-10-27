@@ -549,7 +549,7 @@ app.get(
   wrap(async (req, res) => {
     const id = text(req.query.id, 300);
     parsePR(id);
-    res.json(await merging.inspect(id));
+    res.json(await merging.inspect(id, { includeUpdate: true }));
   }),
 );
 app.post(
@@ -563,6 +563,19 @@ app.post(
         baseBranch: text(req.body.baseBranch, 200),
         reviewId: text(req.body.reviewId, 100),
         method: text(req.body.method, 20),
+      }),
+    );
+  }),
+);
+app.post(
+  '/api/update-branch',
+  wrap(async (req, res) => {
+    const id = text(req.body.prId, 300);
+    parsePR(id);
+    res.status(202).json(
+      await merging.updateBase(id, {
+        sha: text(req.body.sha, 64),
+        baseBranch: text(req.body.baseBranch, 200),
       }),
     );
   }),
@@ -690,6 +703,9 @@ const healthTimer = setInterval(() => {
   void health().catch((error) => engine.log('error', `Connection check failed: ${error.message}`));
 }, 1500);
 const mergeTimer = setInterval(() => {
+  void merging
+    .refreshUpdates()
+    .catch((error) => engine.log('error', `Branch update check failed: ${error.message}`));
   void merging
     .tick()
     .catch((error) => engine.log('error', `Automatic merge check failed: ${error.message}`));

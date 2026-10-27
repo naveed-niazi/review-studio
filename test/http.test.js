@@ -31,7 +31,7 @@ export async function startFixture() {
   ];
   await writeFile(
     path.join(bin, 'gh'),
-    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='api'&&args[1]==='user'){console.log(args.includes('--jq')?'dev-user':JSON.stringify({login:'dev-user'}));}else if(args[0]==='pr'&&args[1]==='list'){const repo=args[args.indexOf('--repo')+1];setTimeout(()=>console.log(JSON.stringify(${JSON.stringify(titles)}.map((title,i)=>({number:i+101,title,headRefOid:'a'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/'+repo+'/pull/'+(i+101),author:{login:['alex','sarah','jordan'][i%3]},isDraft:i===4,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),additions:48+i*21,deletions:12+i*3,changedFiles:3+i})))),1500);}else if(args[0]==='pr'&&args[1]==='view'){console.log(JSON.stringify({number:Number(args[2]),title:'Test pull request',headRefOid:'a'.repeat(40),baseRefOid:'b'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/acme/web-app/pull/'+args[2],state:'OPEN',isDraft:false,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'APPROVED',statusCheckRollup:[],author:{login:'alex'},body:'## Summary\\nA focused feature change.',additions:48,deletions:12}));}else if(args[0]==='repo'&&args[1]==='list'){console.log(JSON.stringify([{nameWithOwner:'acme/new-project',description:'A new project',isPrivate:true}]));}else if(args[0]==='api'&&args.includes('PUT')&&args[1].endsWith('/merge')){let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{require('node:fs').appendFileSync(${JSON.stringify(path.join(root, 'merge-requests.jsonl'))},input+'\\n');console.log(JSON.stringify({merged:true,sha:'c'.repeat(40)}));});}else if(args[0]==='api'&&/^repos\\/[^/]+\\/[^/]+$/.test(args[1])){console.log(JSON.stringify({permissions:{push:true},allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true}));}else if(args[0]==='api'){console.log(JSON.stringify([[{filename:'src/auth.ts',additions:4,deletions:1,patch:'@@ -1 +1 @@\\n-old\\n+new'}]]));}else if(args[0]==='auth'){console.log('Already authenticated');}else process.exit(2);`,
+    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='api'&&args[1]==='user'){console.log(args.includes('--jq')?'dev-user':JSON.stringify({login:'dev-user'}));}else if(args[0]==='pr'&&args[1]==='list'){const repo=args[args.indexOf('--repo')+1];setTimeout(()=>console.log(JSON.stringify(${JSON.stringify(titles)}.map((title,i)=>({number:i+101,title,headRefOid:'a'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/'+repo+'/pull/'+(i+101),author:{login:['alex','sarah','jordan'][i%3]},isDraft:i===4,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),additions:48+i*21,deletions:12+i*3,changedFiles:3+i})))),1500);}else if(args[0]==='pr'&&args[1]==='view'){console.log(JSON.stringify({number:Number(args[2]),title:'Test pull request',headRefOid:require('node:fs').existsSync(${JSON.stringify(root)}+'/updated-'+args[2])?'d'.repeat(40):'a'.repeat(40),baseRefOid:'b'.repeat(40),baseRefName:'main',headRefName:'feature/session-expiry',url:'https://github.com/acme/web-app/pull/'+args[2],state:'OPEN',isDraft:false,mergeable:'MERGEABLE',mergeStateStatus:'CLEAN',reviewDecision:'APPROVED',statusCheckRollup:[],author:{login:'alex'},body:'## Summary\\nA focused feature change.',additions:48,deletions:12}));}else if(args[0]==='repo'&&args[1]==='list'){console.log(JSON.stringify([{nameWithOwner:'acme/new-project',description:'A new project',isPrivate:true}]));}else if(args[0]==='api'&&args.includes('PUT')&&args[1].endsWith('/update-branch')){let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const n=args[1].split('/').at(-2);require('node:fs').writeFileSync(${JSON.stringify(root)}+'/updated-'+n,input);console.log(JSON.stringify({message:'Updating pull request branch.'}));});}else if(args[0]==='api'&&args[1].includes('/compare/')){console.log(JSON.stringify({ahead_by:args[1].split('/').at(-1).startsWith('d'.repeat(40))?0:2}));}else if(args[0]==='api'&&args.includes('PUT')&&args[1].endsWith('/merge')){let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{require('node:fs').appendFileSync(${JSON.stringify(path.join(root, 'merge-requests.jsonl'))},input+'\\n');console.log(JSON.stringify({merged:true,sha:'c'.repeat(40)}));});}else if(args[0]==='api'&&/^repos\\/[^/]+\\/[^/]+$/.test(args[1])){console.log(JSON.stringify({permissions:{push:true},allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true}));}else if(args[0]==='api'){console.log(JSON.stringify([[{filename:'src/auth.ts',additions:4,deletions:1,patch:'@@ -1 +1 @@\\n-old\\n+new'}]]));}else if(args[0]==='auth'){console.log('Already authenticated');}else process.exit(2);`,
     { mode: 0o755 },
   );
   await writeFile(
@@ -379,4 +379,50 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
     assert.ok(!final.prs.some((p) => p.id === pr.id));
     assert.equal(final.merges[0].status, 'merged');
     assert.equal(final.merges[0].method, 'squash');
+  });
+
+if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
+  test('branch update API requires CSRF and the preview SHA, then exposes the outdated review', async (t) => {
+    const app = await startFixture();
+    t.after(() => app.stop());
+    for (let i = 0; i < 150; i++) {
+      if (
+        (await (await fetch(app.url + '/api/state')).json()).prs.some(
+          (p) => p.id === 'acme/web-app#103',
+        )
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const reviewId = await app.seedReview('acme/web-app#103');
+    const prId = 'acme/web-app#103',
+      sha = 'a'.repeat(40),
+      baseBranch = 'main';
+    const { token } = await (await fetch(app.url + '/api/session')).json();
+    const headers = { 'Content-Type': 'application/json', 'X-Studio-Token': token };
+    const post = (body, h = headers) =>
+      fetch(app.url + '/api/update-branch', {
+        method: 'POST',
+        headers: h,
+        body: JSON.stringify(body),
+      });
+    assert.equal(
+      (await post({ prId, sha, baseBranch }, { 'Content-Type': 'application/json' })).status,
+      403,
+    );
+    assert.equal((await post({ prId, sha: 'e'.repeat(40), baseBranch })).status, 400);
+    const preview = await (
+      await fetch(app.url + '/api/merge?id=' + encodeURIComponent(prId))
+    ).json();
+    assert.equal(preview.update.behind, 2);
+    assert.equal((await post({ prId, sha, baseBranch })).status, 202);
+    const refreshed = await (
+      await fetch(app.url + '/api/merge?id=' + encodeURIComponent(prId))
+    ).json();
+    assert.equal(refreshed.sha, 'd'.repeat(40));
+    assert.equal(refreshed.review.id, reviewId);
+    assert.equal(refreshed.review.current, false);
+    assert.equal(refreshed.update.attempt.status, 'head_changed');
+    assert.equal(refreshed.update.behind, 0);
+    assert.equal((await post({ prId, sha: refreshed.sha, baseBranch })).status, 400);
   });

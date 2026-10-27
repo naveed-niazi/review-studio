@@ -26,7 +26,7 @@ Review Studio uses Claude Code for analysis and GitHub CLI for repository access
 
 ## Review and merge from one dashboard
 
-See the latest review verdict and Action line beside each PR. Filter reviewed changes by verdict, repository, DEV/PROD target, and base branch; open the full review before choosing merge commit, squash, or rebase. Optional repository rules can automatically merge published, current reviews matching an exact base branch and selected non-blocking verdicts. GitHub checks and merge restrictions must pass. Automatic merging starts disabled. See [merge configuration and limitations](docs/configuration.md#reviewed-prs-and-merging).
+See the latest review verdict and Action line beside each PR, and open the full text with **Latest review**. Filter reviewed changes by verdict, repository, DEV/PROD target, and base branch; open the full review before choosing merge commit, squash, or rebase. Bring outdated branches up to date with **Update with base branch**, then queue a fresh review. Optional repository rules can automatically merge published, current reviews matching an exact base branch and selected non-blocking verdicts. GitHub checks and merge restrictions must pass. Automatic merging starts disabled. See [merge configuration and limitations](docs/configuration.md#reviewed-prs-and-merging).
 
 ![Reviewed pull requests with verdict and environment filters](docs/screenshots/reviewed-pull-requests.png)
 

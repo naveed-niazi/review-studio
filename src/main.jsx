@@ -795,26 +795,40 @@ function App() {
                             )}
                           </div>
                           <div className="row-action pr-actions">
+                            <Button onClick={() => setModal({ type: 'merge', pr })}>
+                              {pr.review ? 'Merge…' : 'Update branch…'}
+                            </Button>
                             {pr.review && (
-                              <Button onClick={() => setModal({ type: 'merge', pr })}>
-                                Merge…
+                              <Button
+                                onClick={() =>
+                                  setModal({
+                                    type: 'detail',
+                                    pr,
+                                    jobId: pr.review.id,
+                                    initialTab: 'result',
+                                  })
+                                }
+                              >
+                                Latest review
                               </Button>
                             )}
-                            <Button
-                              icon={job ? ChevronRight : Plus}
-                              busy={busy[`queue-${pr.id}`]}
-                              onClick={() =>
-                                job
-                                  ? setModal({
-                                      type: 'detail',
-                                      pr,
-                                      jobId: job.id,
-                                    })
-                                  : queuePR(pr)
-                              }
-                            >
-                              {job ? 'View' : 'Queue'}
-                            </Button>
+                            {(!pr.review || job?.id !== pr.review.id) && (
+                              <Button
+                                icon={job ? ChevronRight : Plus}
+                                busy={busy[`queue-${pr.id}`]}
+                                onClick={() =>
+                                  job
+                                    ? setModal({
+                                        type: 'detail',
+                                        pr,
+                                        jobId: job.id,
+                                      })
+                                    : queuePR(pr)
+                                }
+                              >
+                                {job ? (pr.review ? 'Latest attempt' : 'View') : 'Queue'}
+                              </Button>
+                            )}
                           </div>
                         </div>
                       );
@@ -2389,7 +2403,7 @@ function Detail({ modal, state, close, action, busy, setModal }) {
   const [job, setJob] = useState(null),
     [details, setDetails] = useState(null),
     [error, setError] = useState(''),
-    [tab, setTab] = useState('overview'),
+    [tab, setTab] = useState(modal.initialTab || 'overview'),
     [notes, setNotes] = useState(''),
     [notesLoaded, setNotesLoaded] = useState(false),
     [copy, setCopy] = useState(false);

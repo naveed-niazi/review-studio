@@ -2727,3 +2727,12 @@ main {
   color: #777c90;
   overflow-wrap: anywhere;
 }
+
+.branch-update {
+  padding: 16px 0 24px;
+  border-top: 1px solid var(--border);
+}
+.branch-update h3 {
+  font-size: 14px;
+  margin-bottom: 8px;
+}
