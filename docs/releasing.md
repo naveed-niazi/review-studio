@@ -53,9 +53,9 @@ No personal GitHub token is needed: release jobs use the repository-scoped Actio
 
 ## Signing and notarization
 
-Current installers are **unsigned, unnotarized previews** for Apple Silicon Macs on macOS 13+. All automated releases are explicitly marked prerelease. Gatekeeper may block first launch, and login-item registration may be unreliable.
+Current installers are **ad-hoc signed, unnotarized previews** for Apple Silicon Macs on macOS 13+. All automated releases are explicitly marked prerelease. Gatekeeper may block first launch, and login-item registration may be unreliable.
 
-A signed stable release requires an Apple Developer signing identity, removal of the explicit `mac.identity: null` setting, notarization configuration, and protected signing credentials. Signing and notarization are not configured yet. Keep certificates/passwords in protected release secrets or secure local storage, never in Git. Before declaring stable support, validate signing, notarization, Gatekeeper, first-time authentication, encrypted key storage, background behavior, and login startup on a clean Mac.
+Ad-hoc signing uses `mac.identity: "-"` to give the app its own bundle identity for native macOS notifications. It does not establish developer identity or bypass Gatekeeper. A stable release requires an Apple Developer signing identity replacing that setting, notarization configuration, and protected signing credentials. Developer ID signing and notarization are not configured yet. Keep certificates/passwords in protected release secrets or secure local storage, never in Git. Before declaring stable support, validate signing, notarization, Gatekeeper, first-time authentication, encrypted key storage, background behavior, and login startup on a clean Mac.
 
 The known build-tool advisory is recorded in [SECURITY.md](../SECURITY.md). Reassess it before stable distribution. Intel, Windows, and Linux installers require their own validated build and test workflows.
 

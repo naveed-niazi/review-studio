@@ -8,6 +8,7 @@ import { extractFile, listPackage, statFile } from '@electron/asar';
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const app = path.resolve('release/mac-arm64/Review Studio.app');
+execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' });
 const relativeArchive = 'Contents/Resources/app.asar';
 const archive = path.join(app, relativeArchive);
 const dmg = `Review-Studio-${pkg.version}-arm64.dmg`;

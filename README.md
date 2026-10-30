@@ -20,6 +20,7 @@ _All screenshots use fictional repositories and isolated demo data._
 - **Approval or automatic publishing.** Inspect a result before posting, or opt into automatic GitHub reviews. A new installation starts paused with approval required.
 - **Automatic discovery.** Choose the polling interval and age window. Newly discovered PRs and updated commits can join the queue automatically.
 - **Local repository access.** Reuse a clone or browse GitHub repositories and clone from the app. Each review uses an isolated worktree at the exact PR commit.
+- **Native Mac notifications.** Get alerts for reviews needing attention, failed operations, network/account problems, and a stopped engine. Dock and menu-bar counts track outstanding items, even with the window closed. [Notification settings](docs/configuration.md#notifications-and-attention-count).
 - **Background operation.** The Mac app can stay in the menu bar and offers optional start at login in packaged builds.
 
 Review Studio uses Claude Code for analysis and GitHub CLI for repository access. There is no Review Studio account or hosted backend to configure. Review content is sent to Anthropic through Claude Code; this is **not an offline model**.
@@ -34,7 +35,7 @@ See the latest review verdict and Action line beside each PR, and open the full 
 
 ## Download for Mac
 
-[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.2.0/Review-Studio-1.2.0-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.2.0)
+[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.3.0/Review-Studio-1.3.0-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.3.0)
 
 Requires an Apple Silicon Mac (M-series), macOS 13 or newer, Git, GitHub CLI, and Claude Code. Node.js is bundled in the app; you do not need to install Node.js or clone this repository to use the download. Intel Macs, Windows, and Linux installers are not included.
 
@@ -42,7 +43,7 @@ Requires an Apple Silicon Mac (M-series), macOS 13 or newer, Git, GitHub CLI, an
 2. Open the app. It detects existing GitHub CLI and Claude Code sign-ins. Install missing CLIs using the links in Settings, then connect your accounts.
 3. Add a repository, queue a PR, and start the runner. Reviews require approval before publishing by default.
 
-This initial download is an **unsigned, unnotarized preview**. macOS may block its first launch. If you trust this download, follow [Apple’s instructions for opening an unidentified developer’s app](https://support.apple.com/en-ie/102445), using **System Settings → Privacy & Security → Open Anyway** after attempting to open it. Start-at-login registration may not work reliably with unsigned builds.
+This download is an **ad-hoc signed, unnotarized preview**, without an Apple Developer ID certificate. macOS may block its first launch. If you trust this download, follow [Apple’s instructions for opening an unidentified developer’s app](https://support.apple.com/en-ie/102445), using **System Settings → Privacy & Security → Open Anyway** after attempting to open it. Start-at-login registration may remain unreliable until Developer ID signing and notarization are configured.
 
 ## Run from source
 
@@ -116,7 +117,7 @@ Open [localhost:8790](http://127.0.0.1:8790). Keep the server process running. T
 
 Pull requests run CI. Changes affecting the application or packaging also exercise the Mac installer workflow. Every push to `main` builds a tested Apple Silicon installer, available for seven days under the [workflow run’s Artifacts section](https://github.com/naveed-niazi/review-studio/actions/workflows/macos-release.yml).
 
-Public downloads are published from version tags such as `v1.2.0`, after clean-runner builds, tests, package inspection, and checksum verification. Releases include GitHub build provenance. The tag must match `package.json` and point to a commit already on `main`; published versions are never overwritten. See the [release guide](docs/releasing.md).
+Public downloads are published from version tags such as `v1.3.0`, after clean-runner builds, tests, package inspection, and checksum verification. Releases include GitHub build provenance. The tag must match `package.json` and point to a commit already on `main`; published versions are never overwritten. See the [release guide](docs/releasing.md).
 
 ## Development and contributions
 

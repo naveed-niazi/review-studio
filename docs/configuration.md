@@ -97,7 +97,7 @@ A failed publishing request keeps the completed review locally and requires **Re
 - **PR changed before publishing:** review the latest commit. Publication is tied to the inspected SHA.
 - **Already running:** use the existing app or fully quit it. Use a separate `REVIEW_STUDIO_DATA` for development; do not remove a live process’s lock file.
 - **Port in use:** set `REVIEW_STUDIO_PORT` to another local port. Desktop mode selects one automatically.
-- **macOS blocks a locally built app:** development builds are unsigned. Use `npm run desktop` from source, or sign/notarize your own build following the release guide.
+- **macOS blocks a locally built app:** packaged previews are ad-hoc signed but not notarized. Use `npm run desktop` from source, or sign/notarize your own build following the release guide.
 
 GitHub.com is the supported API target. GitHub Enterprise and Windows/Linux desktop behavior need separate validation.
 
@@ -138,3 +138,15 @@ Updates require an open PR, write permission, no unresolved conflicts, no active
 GitHub accepts branch updates asynchronously. Refresh status to see the new head; pending requests are also checked in the background each minute. Pending or uncertain updates block merges and are not resubmitted automatically, including after restarting the app. Network errors may require verifying the outcome on GitHub.
 
 When the head changes, the previous review becomes outdated and cannot authorize a merge. Choose **Queue new review** to review the updated commits immediately, or let your configured discovery workflow queue it. As with merging, GitHub does not provide an atomic target-branch precondition; avoid retargeting while an update is in progress.
+
+## Notifications and attention count
+
+The packaged Mac app sends native notifications while it is running, including when its window is closed. Keep **Settings & connections → App & startup → Keep running when the window closes** enabled for background alerts. Quitting the app stops monitoring; start at login is a separate option. Browser/server mode does not send native desktop notifications.
+
+Under **Notifications & attention badge**, control review/operation alerts, connection/engine alerts, sounds, reminders, and the icon count independently. Notifications and badges default to on; sound defaults to off. Use **Send test notification** to check delivery, and **Open macOS notification settings** to allow alerts and badges for Review Studio. macOS Focus and notification settings can suppress banners even after macOS accepts a notification.
+
+The Dock badge and menu-bar number count outstanding items, not unread messages. Items include current reviews awaiting approval, published blocking reviews, failed reviews (including scheduled recovery), failed publication, repository sync/clone failures, uncertain or failed merge/base-update operations, and connection or engine problems. Resolved, superseded, closed, merged, and disabled-repository review items drop out automatically. Opening the app does not clear unresolved items. The Activity page lists the same server-side items; desktop engine failures also appear in desktop settings and the badge.
+
+Alerts group new items and remember delivered issues across restarts. Retries of the same failed review do not each generate a notification. Optional reminders repeat after 30 minutes while issues remain. Connection problems alert promptly when detected, and recovery sends one notice once all connection checks complete. Existing provider retry windows and network checks remain in effect; notifications do not change runner settings or retry policies. A desktop heartbeat also detects an exited engine or an engine that stops responding for more than 75 seconds. Sleep is excluded from that heartbeat timeout.
+
+Click an alert to open the relevant app page. Notification text excludes repository names, PR titles, review contents, account details, and raw logs. Delivery timestamps and desktop preferences are saved locally alongside the app's desktop preferences. If macOS rejects delivery, Settings explains the problem and notification attempts back off; the menu-bar count continues to work.

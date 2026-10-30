@@ -17,6 +17,7 @@ import {
   validateMergeConfig,
 } from './merging.js';
 import { Engine } from './engine.js';
+import { attentionSnapshot } from './attention.js';
 import { ConnectionMonitor } from './connections.js';
 import { run, parsePR, remoteRepo, abortAllProcesses, isRepository } from './process.js';
 
@@ -84,6 +85,14 @@ const engine = new Engine(store, {
   env: () => (apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
 });
 const merging = new MergeService(store, engine, { notify });
+function attention() {
+  return attentionSnapshot(store, connections.snapshot(), operations.values());
+}
+function sendAttention() {
+  process.parentPort?.postMessage({ type: 'attention', snapshot: attention() });
+}
+const attentionHeartbeat = setInterval(sendAttention, 5000);
+attentionHeartbeat.unref();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   const host = req.headers.host || '';
@@ -150,6 +159,7 @@ app.get('/api/events', (req, res) => {
 app.get('/api/state', (_req, res) =>
   res.json({
     settings: store.settings(),
+    attention: attention(),
     repos: store.db.prepare('SELECT * FROM repos WHERE archived=0 ORDER BY id').all(),
     mergeChecks: Object.fromEntries(merging.checks),
     merges: store.db.prepare('SELECT * FROM merges ORDER BY rowid DESC LIMIT 100').all(),
@@ -716,6 +726,7 @@ const shutdown = async () => {
   shuttingDown = true;
   engine.closing = true;
   clearInterval(ticker);
+  clearInterval(attentionHeartbeat);
   clearInterval(healthTimer);
   clearInterval(recoveryTimer);
   clearInterval(mergeTimer);
@@ -730,6 +741,10 @@ const shutdown = async () => {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 process.parentPort?.on('message', (event) => {
+  if (event.data?.type === 'check-connections')
+    void health({ force: true })
+      .then(notify)
+      .catch((e) => engine.log('error', e.message));
   if (event.data?.type === 'shutdown') void shutdown();
   if (event.data?.type === 'api-key') {
     apiKey = event.data.value;
