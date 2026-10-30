@@ -290,6 +290,7 @@ function App() {
     () =>
       window.reviewStudio?.onNavigate((p) => {
         setPage(p);
+        setModal(null);
         setSearch('');
       }),
     [],
@@ -311,6 +312,7 @@ function App() {
       </div>
     );
   const { settings, prs, jobs, repos, health } = state;
+  const attention = state.attention || { count: 0, items: [] };
   const connectionReady = health && ['github', 'claude', 'git'].every((key) => health[key]?.ok);
   const connectionProblems = health
     ? ['github', 'claude', 'git'].filter((key) => !health[key]?.ok)
@@ -390,7 +392,7 @@ function App() {
     ['reviews', 'Reviews', ShieldCheck, ready.length],
     ['repositories', 'Repositories', FolderGit2, null],
     ['prompts', 'Prompts & rules', BookOpen, null],
-    ['activity', 'Activity', Activity, failed.length || null],
+    ['activity', 'Activity', Activity, attention.count || null],
   ];
   return (
     <div className="shell">
@@ -552,9 +554,9 @@ function App() {
                   [
                     CircleAlert,
                     'Needs attention',
-                    failed.length,
-                    failed.length
-                      ? 'Open a review to inspect and retry'
+                    attention.count,
+                    attention.count
+                      ? 'Reviews, connections, and operations to check'
                       : 'Everything is looking good',
                     'orange',
                   ],
@@ -1141,25 +1143,34 @@ function App() {
                   ))}
                 </section>
               )}
-              {failed.length > 0 && (
+              {attention.count > 0 && (
                 <section className="panel attention">
                   <div className="panel-heading">
                     <h2>
-                      Needs attention <span className="count">{failed.length}</span>
+                      Needs attention <span className="count">{attention.count}</span>
                     </h2>
                   </div>
-                  {failed.map((j) => (
+                  {attention.items.map((item) => (
                     <button
-                      key={j.id}
+                      key={item.id}
                       className="error-row"
-                      onClick={() => setModal({ type: 'detail', jobId: j.id })}
+                      onClick={() =>
+                        item.jobId
+                          ? setModal({
+                              type: 'detail',
+                              jobId: item.jobId,
+                              initialTab:
+                                item.kind === 'approval' || item.kind === 'blocking'
+                                  ? 'result'
+                                  : 'activity',
+                            })
+                          : navigate(item.page)
+                      }
                     >
                       <CircleAlert size={18} />
                       <div>
-                        <b>
-                          {j.repo.split('/')[1]} #{j.number}
-                        </b>
-                        <p>{j.error}</p>
+                        <b>{item.label || item.title}</b>
+                        {item.label && <p>{item.title}</p>}
                       </div>
                       <ChevronRight size={16} />
                     </button>
@@ -1937,7 +1948,8 @@ function Settings({ state, action, busy, refresh, showToast }) {
     [key, setKey] = useState(''),
     [auth, setAuth] = useState(null),
     [authInput, setAuthInput] = useState(''),
-    [desktop, setDesktop] = useState(null);
+    [desktop, setDesktop] = useState(null),
+    [testingNotification, setTestingNotification] = useState(false);
   const patch = (k, v) => setForm({ ...form, [k]: v });
   useEffect(() => {
     if (window.reviewStudio) window.reviewStudio.getPreferences().then(setDesktop);
@@ -1945,6 +1957,12 @@ function Settings({ state, action, busy, refresh, showToast }) {
   useEffect(() => {
     let alive = true;
     const poll = async () => {
+      if (window.reviewStudio) {
+        try {
+          const prefs = await window.reviewStudio.getPreferences();
+          if (alive) setDesktop(prefs);
+        } catch {}
+      }
       try {
         const data = await api('/api/auth/session');
         if (alive) setAuth(data);
@@ -2369,6 +2387,92 @@ function Settings({ state, action, busy, refresh, showToast }) {
                 Enable Review Studio in macOS System Settings → General → Login Items.
               </div>
             )}
+            <h3>Notifications & attention badge</h3>
+            <p className="subtle">
+              Native macOS alerts work while the app runs in the menu bar, even with its window
+              closed. Notification text excludes repository names, PR titles, and raw logs.
+            </p>
+            {desktop.notificationError && (
+              <div className="banner warning">
+                <CircleAlert size={16} />
+                <span>{desktop.notificationError}</span>
+              </div>
+            )}
+            {(desktop.engineStopped || desktop.engineUnresponsive) && (
+              <div className="banner warning">
+                <span>
+                  {desktop.engineStopped
+                    ? 'The review engine stopped.'
+                    : 'The review engine is not responding.'}{' '}
+                  Your queue is saved.
+                </span>
+                <Button onClick={() => window.reviewStudio.restart()}>Restart Review Studio</Button>
+              </div>
+            )}
+            <Toggle
+              checked={desktop.notifications}
+              onChange={(v) => desktopPreference('notifications', v)}
+              label="Enable macOS notifications"
+              description="Get notified about new problems without opening the app. macOS notification permissions and Focus settings still apply."
+            />
+            <Toggle
+              checked={desktop.notifyAttention}
+              onChange={(v) => desktopPreference('notifyAttention', v)}
+              label="Reviews and operations needing attention"
+              description="Approval requests, blocking findings, failed reviews and publishing, repository sync failures, and uncertain merge or branch update outcomes."
+            />
+            <Toggle
+              checked={desktop.notifyConnections}
+              onChange={(v) => desktopPreference('notifyConnections', v)}
+              label="Connection and engine alerts"
+              description="Network, service, account, rate-limit, and stopped-engine alerts, plus a notice when connections recover."
+            />
+            <Toggle
+              checked={desktop.notificationReminders}
+              onChange={(v) => desktopPreference('notificationReminders', v)}
+              label="Remind me about unresolved issues"
+              description="Group reminders every 30 minutes. Repeated retries do not create a notification for each attempt."
+            />
+            <Toggle
+              checked={desktop.notificationSound}
+              onChange={(v) => desktopPreference('notificationSound', v)}
+              label="Play notification sounds"
+              description="Use the system notification sound for alerts."
+            />
+            <Toggle
+              checked={desktop.attentionBadge}
+              onChange={(v) => desktopPreference('attentionBadge', v)}
+              label="Show attention count on the app icon"
+              description="The Dock badge and menu-bar count show outstanding items, including connections and reviews awaiting approval. Opening the app does not clear unresolved items."
+            />
+            <p className="subtle">
+              {desktop.attentionCount} items currently need attention.{' '}
+              {desktop.notificationStatus === 'submitted'
+                ? 'Last notification submitted to macOS. Focus settings may suppress its banner.'
+                : 'Use the test button to check notification delivery.'}
+            </p>
+            <div className="button-row">
+              <Button
+                busy={testingNotification}
+                disabled={testingNotification}
+                onClick={async () => {
+                  setTestingNotification(true);
+                  try {
+                    setDesktop(await window.reviewStudio.testNotification());
+                  } catch (e) {
+                    showToast(e.message, 'error');
+                  } finally {
+                    setTestingNotification(false);
+                  }
+                }}
+              >
+                Send test notification
+              </Button>
+              <Button onClick={() => window.reviewStudio.openNotificationSettings()}>
+                Open macOS notification settings
+              </Button>
+            </div>
+            <hr />
             <Toggle
               checked={desktop.openAtLogin}
               onChange={(v) => desktopPreference('openAtLogin', v)}

@@ -9,10 +9,13 @@ const {
   dialog,
   shell,
   safeStorage,
+  Notification,
+  powerMonitor,
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
+const { AttentionNotifier, DEFAULTS } = require('./notifications.cjs');
 
 if (process.env.REVIEW_STUDIO_DATA)
   app.setPath('userData', path.join(process.env.REVIEW_STUDIO_DATA, 'desktop'));
@@ -23,7 +26,115 @@ let window,
   quitting = false,
   serviceStopped = false,
   serviceLog = '',
-  prefs = { keepRunning: true };
+  prefs = { keepRunning: true, ...DEFAULTS };
+let notifier,
+  lastHeartbeat = Date.now(),
+  notificationError = null,
+  notificationStatus = 'not-tested',
+  pendingPage = null;
+let latestAttention = { items: [], connectionsChecked: false };
+const liveNotifications = new Map();
+const pages = new Set(['inbox', 'reviews', 'activity', 'repositories', 'settings']);
+function writePrivateJSON(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file + '.tmp', JSON.stringify(value), { mode: 0o600 });
+  fs.renameSync(file + '.tmp', file);
+}
+function openPage(page = 'activity') {
+  pendingPage = pages.has(page) ? page : 'activity';
+  showWindow();
+  if (window && !window.isDestroyed() && !window.webContents.isLoading())
+    window.webContents.send('navigate', pendingPage);
+}
+function restartApp() {
+  app.relaunch();
+  app.quit();
+}
+function setAttentionBadge(count, total) {
+  if (process.platform === 'darwin') app.dock.setBadge(count ? String(count) : '');
+  else app.setBadgeCount(count);
+  if (tray) {
+    if (process.platform === 'darwin') tray.setTitle(count ? String(count) : '');
+    tray.setToolTip(
+      total
+        ? `Review Studio · ${total} items need attention`
+        : 'Review Studio · no outstanding issues',
+    );
+  }
+}
+async function sendNativeNotification({ title, body, page, silent = true }) {
+  if (!Notification.isSupported()) {
+    notificationError = 'Native notifications are unavailable on this system.';
+    notificationStatus = 'unavailable';
+    return false;
+  }
+  return new Promise((resolve) => {
+    const key = pages.has(page) ? page : 'activity';
+    let settled = false;
+    const finish = (value) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }
+    };
+    const timer = setTimeout(() => {
+      notificationStatus = 'unconfirmed';
+      notificationError =
+        'macOS has not confirmed notification delivery. Check notification permissions and Focus settings.';
+      finish(false);
+    }, 10000);
+    try {
+      const n = new Notification({
+        title,
+        body,
+        silent,
+        id: `review-studio:${key}`,
+        groupId: 'review-studio-attention',
+      });
+      liveNotifications.get(key)?.close();
+      liveNotifications.set(key, n);
+      n.on('click', () => openPage(key));
+      n.on('close', () => {
+        if (liveNotifications.get(key) === n) liveNotifications.delete(key);
+      });
+      n.on('show', () => {
+        notificationStatus = 'submitted';
+        notificationError = null;
+        finish(true);
+      });
+      n.on('failed', () => {
+        notificationStatus = 'failed';
+        notificationError =
+          'macOS could not deliver the notification. Allow notifications for Review Studio in System Settings. The app must have a valid code signature.';
+        finish(false);
+      });
+      n.show();
+    } catch {
+      notificationStatus = 'failed';
+      notificationError =
+        'Native notification delivery failed. Check the app signature and macOS notification settings.';
+      finish(false);
+    }
+  });
+}
+function updateAttention() {
+  const items = [...latestAttention.items];
+  if (serviceStopped || (address && Date.now() - lastHeartbeat > 75000))
+    items.push({
+      id: 'engine',
+      kind: serviceStopped ? 'stopped' : 'unresponsive',
+      title: serviceStopped ? 'Review engine stopped' : 'Review engine is not responding',
+      page: 'settings',
+      category: 'connection',
+    });
+  notifier?.update({
+    ...latestAttention,
+    items,
+    connectionsChecked:
+      latestAttention.connectionsChecked && !serviceStopped && Date.now() - lastHeartbeat <= 75000,
+  });
+}
 const keyPath = () => path.join(app.getPath('userData'), 'api-key.encrypted');
 const preferencesPath = () => path.join(app.getPath('userData'), 'preferences.json');
 const safeExternal = (url) => {
@@ -65,6 +176,13 @@ function cliPath() {
 function preferences() {
   const login = app.getLoginItemSettings({ args: ['--background'] });
   return {
+    ...Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, prefs[k]])),
+    notificationSupported: Notification.isSupported(),
+    notificationStatus,
+    notificationError,
+    engineStopped: serviceStopped,
+    engineUnresponsive: !!address && Date.now() - lastHeartbeat > 75000,
+    attentionCount: notifier?.snapshot.items.length || 0,
     apiKeySaved: fs.existsSync(keyPath()),
     keepRunning: prefs.keepRunning,
     openAtLogin: login.openAtLogin,
@@ -128,6 +246,20 @@ function createWindow(show = true) {
   void window.loadURL(address);
 }
 function showWindow() {
+  if (!address) {
+    if (serviceStopped)
+      void dialog
+        .showMessageBox({
+          type: 'error',
+          message: 'The review engine stopped.',
+          detail: 'Your saved queue is preserved. Restart Review Studio to reconnect.',
+          buttons: ['Restart Review Studio', 'Cancel'],
+        })
+        .then(({ response }) => {
+          if (response === 0) restartApp();
+        });
+    return;
+  }
   createWindow(true);
 }
 function setupTray() {
@@ -138,6 +270,8 @@ function setupTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Open Review Studio', click: showWindow },
+      { label: 'View items needing attention', click: () => openPage('activity') },
+      { label: 'Restart Review Studio', click: restartApp },
       { type: 'separator' },
       { label: 'Quit Review Studio', click: () => app.quit() },
     ]),
@@ -166,8 +300,7 @@ else {
               label: 'Settings',
               accelerator: 'CmdOrCtrl+,',
               click: () => {
-                showWindow();
-                window.webContents.send('navigate', 'settings');
+                openPage('settings');
               },
             },
             { role: 'hide' },
@@ -193,6 +326,33 @@ else {
         { role: 'windowMenu' },
       ]),
     );
+    ipcMain.handle('navigation:ready', (event) => {
+      verifySender(event);
+      const page = pendingPage;
+      pendingPage = null;
+      return page;
+    });
+    ipcMain.handle('notifications:test', async (event) => {
+      verifySender(event);
+      await sendNativeNotification({
+        title: 'Review Studio notifications',
+        body: 'Notifications will alert you to reviews and connection issues, even when the window is closed.',
+        page: 'settings',
+        silent: !prefs.notificationSound,
+      });
+      return preferences();
+    });
+    ipcMain.handle('notifications:settings', (event) => {
+      verifySender(event);
+      if (process.platform === 'darwin')
+        return shell.openExternal(
+          'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+        );
+    });
+    ipcMain.handle('app:restart', (event) => {
+      verifySender(event);
+      restartApp();
+    });
     ipcMain.handle('preferences:get', (event) => {
       verifySender(event);
       return preferences();
@@ -214,10 +374,10 @@ else {
           );
       }
       if (typeof values.keepRunning === 'boolean') prefs.keepRunning = values.keepRunning;
-      fs.mkdirSync(path.dirname(preferencesPath()), { recursive: true });
-      fs.writeFileSync(preferencesPath(), JSON.stringify(prefs), {
-        mode: 0o600,
-      });
+      for (const key of Object.keys(DEFAULTS))
+        if (typeof values[key] === 'boolean') prefs[key] = values[key];
+      writePrivateJSON(preferencesPath(), prefs);
+      notifier?.configure(prefs);
       return preferences();
     });
     ipcMain.handle('directory:select', async (event) => {
@@ -259,6 +419,44 @@ else {
       );
     }
     setupTray();
+    const notificationStatePath = path.join(app.getPath('userData'), 'notification-state.json');
+    let savedNotifications = {};
+    try {
+      savedNotifications = JSON.parse(fs.readFileSync(notificationStatePath, 'utf8'));
+    } catch {}
+    notifier = new AttentionNotifier({
+      send: sendNativeNotification,
+      badge: setAttentionBadge,
+      saved: savedNotifications,
+      persist: (value) => writePrivateJSON(notificationStatePath, value),
+    });
+    notifier.configure(prefs);
+    if (process.platform === 'darwin')
+      void Notification.getHistory()
+        .then((history) => {
+          for (const n of history) {
+            const page = n.id?.replace(/^review-studio:/, '');
+            if (pages.has(page)) {
+              n.on('click', () => openPage(page));
+              liveNotifications.set(page, n);
+            }
+          }
+        })
+        .catch(() => {});
+    setInterval(() => {
+      if (!quitting) {
+        updateAttention();
+        void notifier.flush().catch(() => {
+          notificationError = 'Could not save notification state. Check available disk space.';
+        });
+      }
+    }, 5000).unref();
+    powerMonitor.on('resume', () => {
+      lastHeartbeat = Date.now();
+      updateAttention();
+      if (!serviceStopped) service?.postMessage({ type: 'check-connections' });
+    });
+
     service = utilityProcess.fork(path.join(__dirname, '../server/index.js'), [], {
       serviceName: 'Review Studio Engine',
       env: {
@@ -277,7 +475,13 @@ else {
     service.stdout?.on('data', collect);
     service.stderr?.on('data', collect);
     service.on('message', (message) => {
+      if (message.type === 'attention' && Array.isArray(message.snapshot?.items)) {
+        lastHeartbeat = Date.now();
+        latestAttention = message.snapshot;
+        updateAttention();
+      }
       if (message.type === 'ready') {
+        lastHeartbeat = Date.now();
         address = message.url;
         createWindow(
           !process.argv.includes('--background') && !app.getLoginItemSettings().wasOpenedAtLogin,
@@ -290,12 +494,10 @@ else {
         app.quit();
         return;
       }
-      dialog.showErrorBox(
-        'Review Studio could not keep running',
-        `The local engine exited (${code}). Your saved queue is preserved.\n\n${serviceLog}`,
-      );
-      quitting = true;
-      app.quit();
+      updateAttention();
+      void notifier.flush().catch(() => {
+        notificationError = 'Could not save notification state. Check available disk space.';
+      });
     });
     setTimeout(() => {
       if (!address && !quitting)
@@ -308,6 +510,7 @@ else {
 }
 app.on('before-quit', (event) => {
   quitting = true;
+  if (app.isReady()) setAttentionBadge(0, 0);
   if (service && !serviceStopped) {
     event.preventDefault();
     service.postMessage({ type: 'shutdown' });

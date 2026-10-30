@@ -205,12 +205,25 @@ try {
         error: 'claude produced no output for 5 minutes',
       },
     ];
+    data.attention = {
+      count: 1,
+      items: [
+        {
+          id: 'recovery-test',
+          kind: 'review_failed',
+          title: 'Review failed; recovery is scheduled',
+          label: pr.repo + ' #' + pr.number,
+          page: 'activity',
+          jobId: data.jobs[0].id,
+        },
+      ],
+    };
     await route.fulfill({ response, json: data });
   });
   await page.reload();
   await page.getByRole('button', { name: /^Activity/ }).click();
   await page.getByRole('heading', { name: /Automatic recovery/ }).waitFor();
-  assert.equal(await page.getByRole('heading', { name: /Needs attention/ }).count(), 0);
+  assert.equal(await page.getByRole('heading', { name: /Needs attention/ }).count(), 1);
   await page.screenshot({ path: '/tmp/review-studio-smart-recovery.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(
