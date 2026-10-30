@@ -51,6 +51,8 @@ jobs:
         run: npm run package:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Preview builds use only the explicit ad-hoc identity, without signing secrets.
+          CSC_FOR_PULL_REQUEST: 'true'
       - name: Test packaged lifecycle with isolated accounts
         run: node test/desktop-check.mjs
       - name: Audit package and verify disk image
