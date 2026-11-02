@@ -73,6 +73,14 @@ export async function startFixture() {
   return {
     url,
     root,
+    seedAttention: () => {
+      const store = createStore(path.join(root, 'data'));
+      try {
+        store.db.prepare("UPDATE repos SET error='Fixture sync failure'").run();
+      } finally {
+        store.db.close();
+      }
+    },
     seedReview: async (prId, verdict = 'NON-BLOCKING') => {
       const store = createStore(path.join(root, 'data'));
       try {
@@ -425,4 +433,52 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
     assert.equal(refreshed.update.attempt.status, 'head_changed');
     assert.equal(refreshed.update.behind, 0);
     assert.equal((await post({ prId, sha: refreshed.sha, baseBranch })).status, 400);
+  });
+
+if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
+  test('attention dismissal requires authentication, validates keys, and preserves failures', async (t) => {
+    const app = await startFixture();
+    t.after(() => app.stop());
+    app.seedAttention();
+    const { token } = await (await fetch(app.url + '/api/session')).json();
+    const headers = { 'Content-Type': 'application/json', 'X-Studio-Token': token };
+    const endpoint = app.url + '/api/attention/dismiss';
+    assert.equal((await fetch(endpoint, { method: 'POST', body: '{}' })).status, 403);
+    assert.equal(
+      (
+        await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ keys: ['invalid'] }),
+        })
+      ).status,
+      400,
+    );
+    const before = await (await fetch(app.url + '/api/state')).json();
+    const target = before.attention.items.find((i) => i.id === 'repository:acme/api');
+    assert.ok(target);
+    assert.equal(
+      (
+        await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ keys: [target.dismissalKey] }),
+        })
+      ).status,
+      200,
+    );
+    const after = await (await fetch(app.url + '/api/state')).json();
+    assert.ok(!after.attention.items.some((i) => i.id === target.id));
+    assert.equal(after.repos.find((r) => r.id === 'acme/api').error, 'Fixture sync failure');
+    assert.equal(
+      (
+        await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ keys: after.attention.items.map((i) => i.dismissalKey) }),
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await (await fetch(app.url + '/api/state')).json()).attention.count, 0);
   });

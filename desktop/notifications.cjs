@@ -7,7 +7,7 @@ const DEFAULTS = {
   attentionBadge: true,
 };
 const keyFor = (i) =>
-  `${i.id}:${i.kind}:${['approval', 'blocking'].includes(i.kind) ? i.jobId || '' : i.generation || ''}`;
+  `${i.id}:${i.kind}:${i.kind === 'approval' ? i.jobId || '' : i.generation || ''}`;
 const REMINDER_MS = 30 * 60 * 1000;
 class AttentionNotifier {
   constructor({ send, badge, persist = () => {}, saved = {}, clock = Date.now }) {
@@ -71,6 +71,7 @@ class AttentionNotifier {
         this.connectionsNotified &&
         this.prefs.notifyConnections &&
         this.snapshot.connectionsChecked &&
+        !this.snapshot.hasConnectionIssues &&
         !this.snapshot.items.some((i) => i.category === 'connection')
       ) {
         if (

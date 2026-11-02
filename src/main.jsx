@@ -1149,31 +1149,60 @@ function App() {
                     <h2>
                       Needs attention <span className="count">{attention.count}</span>
                     </h2>
-                  </div>
-                  {attention.items.map((item) => (
                     <button
-                      key={item.id}
-                      className="error-row"
+                      className="text-button"
+                      disabled={busy['dismiss-attention']}
                       onClick={() =>
-                        item.jobId
-                          ? setModal({
-                              type: 'detail',
-                              jobId: item.jobId,
-                              initialTab:
-                                item.kind === 'approval' || item.kind === 'blocking'
-                                  ? 'result'
-                                  : 'activity',
-                            })
-                          : navigate(item.page)
+                        action(
+                          'dismiss-attention',
+                          () =>
+                            api('/api/attention/dismiss', 'POST', {
+                              keys: attention.items.map((item) => item.dismissalKey),
+                            }),
+                          'Attention items dismissed',
+                        )
                       }
                     >
-                      <CircleAlert size={18} />
-                      <div>
-                        <b>{item.label || item.title}</b>
-                        {item.label && <p>{item.title}</p>}
-                      </div>
-                      <ChevronRight size={16} />
+                      Dismiss all
                     </button>
+                  </div>
+                  {attention.items.map((item) => (
+                    <div key={item.id} className="attention-row">
+                      <button
+                        className="error-row"
+                        onClick={() =>
+                          item.jobId
+                            ? setModal({
+                                type: 'detail',
+                                jobId: item.jobId,
+                                initialTab: item.kind === 'approval' ? 'result' : 'activity',
+                              })
+                            : navigate(item.page)
+                        }
+                      >
+                        <CircleAlert size={18} />
+                        <div>
+                          <b>{item.label || item.title}</b>
+                          {item.label && <p>{item.title}</p>}
+                        </div>
+                        <ChevronRight size={16} />
+                      </button>
+                      <button
+                        className="text-button attention-dismiss"
+                        aria-label={`Dismiss ${item.label || item.title}`}
+                        disabled={busy['dismiss-attention']}
+                        onClick={() =>
+                          action(
+                            'dismiss-attention',
+                            () =>
+                              api('/api/attention/dismiss', 'POST', { keys: [item.dismissalKey] }),
+                            'Attention item dismissed',
+                          )
+                        }
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   ))}
                 </section>
               )}

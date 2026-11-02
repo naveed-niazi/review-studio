@@ -101,7 +101,20 @@ try {
       1,
     );
     await page.evaluate(() => window.reviewStudio.setPreferences({ attentionBadge: true }));
-    db.prepare("UPDATE jobs SET status='published' WHERE id='desktop-review'").run();
+    await app.evaluate(({ app }) => app.emit('activate'));
+    await page.reload();
+    await page.getByRole('button', { name: /^Activity/ }).click();
+    await page.getByRole('button', { name: 'Dismiss acme/desktop #101', exact: true }).click();
+    await expect
+      .poll(() => app.evaluate(({ app }) => app.dock.getBadge()), { timeout: 20000 })
+      .toBe('');
+    assert.equal(
+      db.prepare("SELECT status FROM jobs WHERE id='desktop-review'").get().status,
+      'awaiting_approval',
+    );
+    db.prepare(
+      "UPDATE jobs SET status='published',result='**Verdict: BLOCKING**' WHERE id='desktop-review'",
+    ).run();
     await expect
       .poll(() => app.evaluate(({ app }) => app.dock.getBadge()), { timeout: 20000 })
       .toBe('');
