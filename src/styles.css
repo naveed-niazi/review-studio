@@ -1474,6 +1474,21 @@ main {
 .attention {
   margin-bottom: 25px;
 }
+.attention-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+.attention-row > .error-row {
+  flex: 1;
+  min-width: 0;
+  border-top: 0;
+}
+.attention-dismiss {
+  flex-shrink: 0;
+  margin-right: 24px;
+}
 .error-row {
   display: flex;
   gap: 13px;

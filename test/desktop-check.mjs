@@ -31,7 +31,13 @@ try {
   await page.getByRole('heading', { name: 'Welcome to Review Studio' }).waitFor({ timeout: 25000 });
   const origin = new URL(page.url()).origin;
   const prefs = await page.evaluate(() => window.reviewStudio.getPreferences());
-  assert.equal(prefs.openAtLogin, false);
+  // Login registration belongs to macOS and can already exist outside the isolated data folder.
+  assert.equal(
+    prefs.openAtLogin,
+    await app.evaluate(
+      ({ app }) => app.getLoginItemSettings({ args: ['--background'] }).openAtLogin,
+    ),
+  );
   assert.equal(prefs.keepRunning, true);
   assert.equal(prefs.notifications, true);
   assert.equal(prefs.attentionBadge, true);
@@ -101,7 +107,20 @@ try {
       1,
     );
     await page.evaluate(() => window.reviewStudio.setPreferences({ attentionBadge: true }));
-    db.prepare("UPDATE jobs SET status='published' WHERE id='desktop-review'").run();
+    await app.evaluate(({ app }) => app.emit('activate'));
+    await page.reload();
+    await page.getByRole('button', { name: /^Activity/ }).click();
+    await page.getByRole('button', { name: 'Dismiss acme/desktop #101', exact: true }).click();
+    await expect
+      .poll(() => app.evaluate(({ app }) => app.dock.getBadge()), { timeout: 20000 })
+      .toBe('');
+    assert.equal(
+      db.prepare("SELECT status FROM jobs WHERE id='desktop-review'").get().status,
+      'awaiting_approval',
+    );
+    db.prepare(
+      "UPDATE jobs SET status='published',result='**Verdict: BLOCKING**' WHERE id='desktop-review'",
+    ).run();
     await expect
       .poll(() => app.evaluate(({ app }) => app.dock.getBadge()), { timeout: 20000 })
       .toBe('');

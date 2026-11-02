@@ -17,7 +17,7 @@ import {
   validateMergeConfig,
 } from './merging.js';
 import { Engine } from './engine.js';
-import { attentionSnapshot } from './attention.js';
+import { attentionSnapshot, dismissAttention } from './attention.js';
 import { ConnectionMonitor } from './connections.js';
 import { run, parsePR, remoteRepo, abortAllProcesses, isRepository } from './process.js';
 
@@ -141,6 +141,22 @@ async function health(options) {
   return healthCache;
 }
 app.get('/api/session', (_req, res) => res.json({ token }));
+app.post(
+  '/api/attention/dismiss',
+  wrap((req, res) => {
+    const keys = req.body?.keys;
+    if (
+      !Array.isArray(keys) ||
+      keys.length > 10000 ||
+      keys.some((key) => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
+    )
+      throw new Error('Expected attention item keys.');
+    dismissAttention(store, attention(), keys);
+    sendAttention();
+    notify();
+    res.json(attention());
+  }),
+);
 app.get('/api/events', (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',

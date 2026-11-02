@@ -225,6 +225,32 @@ try {
   await page.getByRole('heading', { name: /Automatic recovery/ }).waitFor();
   assert.equal(await page.getByRole('heading', { name: /Needs attention/ }).count(), 1);
   await page.screenshot({ path: '/tmp/review-studio-smart-recovery.png', fullPage: true });
+  await page.unroute('**/api/state');
+  fixture.seedAttention();
+  await page.reload();
+  await page.getByRole('button', { name: /^Activity/ }).click();
+  await page.getByRole('button', { name: 'Dismiss acme/api', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Dismiss acme/api', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Attention item dismissed' }).waitFor();
+  assert.equal(
+    await page.getByRole('button', { name: 'Dismiss acme/api', exact: true }).count(),
+    0,
+  );
+  await page.reload();
+  await page.getByRole('button', { name: /^Activity/ }).click();
+  await page.getByRole('button', { name: 'Dismiss all', exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole('button', { name: 'Dismiss acme/api', exact: true }).count(),
+    0,
+  );
+  await page.screenshot({ path: '/tmp/review-studio-dismiss-attention.png', fullPage: true });
+  await page.getByRole('button', { name: 'Dismiss all', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Attention items dismissed' }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: /Needs attention/ }).count(), 0);
+  assert.equal(
+    (await (await page.request.get(fixture.url + '/api/state')).json()).attention.count,
+    0,
+  );
   assert.deepEqual(errors, []);
   console.log(
     'UI acceptance passed: inbox, queue, prompts, settings, repository picker, validation errors, changed-file preview, responsive layout.',
