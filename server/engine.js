@@ -512,18 +512,17 @@ export class Engine {
     try {
       await this.lock(repo.id, async () => {
         phase('Fetching exact PR commit');
-        await execute('git', [
-          '-C',
-          repo.path,
-          'fetch',
-          '--no-tags',
-          'origin',
-          `pull/${job.number}/head`,
-        ]);
+        await execute(
+          'git',
+          ['-C', repo.path, 'fetch', '--no-tags', 'origin', `pull/${job.number}/head`],
+          { timeout: this.s.get('gitFetchTimeoutMinutes') * 60000 },
+        );
         const head = await execute('git', ['-C', repo.path, 'rev-parse', 'FETCH_HEAD']);
         if (head !== job.sha)
           throw new Error('PR changed while fetching. Retry with the latest commit.');
-        await execute('git', ['-C', repo.path, 'fetch', '--no-tags', 'origin', pr.baseRefOid]);
+        await execute('git', ['-C', repo.path, 'fetch', '--no-tags', 'origin', pr.baseRefOid], {
+          timeout: this.s.get('gitFetchTimeoutMinutes') * 60000,
+        });
         await execute('git', ['-C', repo.path, 'worktree', 'add', '--detach', worktree, job.sha]);
         created = true;
       });

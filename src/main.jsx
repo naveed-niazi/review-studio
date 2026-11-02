@@ -2331,6 +2331,20 @@ function Settings({ state, action, busy, refresh, showToast }) {
             />
           </label>
           <label>
+            Git download timeout (minutes)
+            <input
+              type="number"
+              min="1"
+              max="5"
+              value={form.gitFetchTimeoutMinutes}
+              onChange={(e) => patch('gitFetchTimeoutMinutes', Number(e.target.value))}
+            />
+            <small>
+              Allow up to 5 minutes per PR or base-commit download on slower connections. Applies to
+              the next download, including retries.
+            </small>
+          </label>
+          <label>
             Inactivity timeout (minutes)
             <input
               type="number"

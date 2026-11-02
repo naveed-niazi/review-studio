@@ -994,3 +994,29 @@ test('explicit cancellation wins when the app quits at the same time', async (t)
   await e.close();
   assert.equal(s.job(id).status, 'cancelled');
 });
+
+test('Git downloads use a five-minute default and the current setting for queued reviews', async (t) => {
+  for (const minutes of [5, 1, 3]) {
+    await t.test(`${minutes}-minute downloads`, async (t) => {
+      const { s } = await fixture(t);
+      assert.equal(s.get('gitFetchTimeoutMinutes'), 5);
+      const id = s.enqueue('owner/repo#1');
+      // A queued job must pick up a newly saved timeout, including older queued reviews.
+      if (minutes !== 5) s.set('gitFetchTimeoutMinutes', minutes);
+      const fake = fakeCommands();
+      await new Engine(s, { command: fake.command }).review(id, new AbortController().signal);
+      const downloads = fake.calls.filter((c) => c.cmd === 'git' && c.args.includes('fetch'));
+      assert.equal(downloads.length, 2);
+      assert.ok(downloads[0].args.includes('pull/1/head'));
+      assert.ok(downloads[1].args.includes(b));
+      for (const download of downloads) assert.equal(download.opts.timeout, minutes * 60000);
+      assert.equal(s.job(id).status, 'awaiting_approval');
+      const reopened = createStore(s.dir);
+      try {
+        assert.equal(reopened.get('gitFetchTimeoutMinutes'), minutes);
+      } finally {
+        reopened.db.close();
+      }
+    });
+  }
+});
