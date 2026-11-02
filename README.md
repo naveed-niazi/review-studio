@@ -35,7 +35,7 @@ See the latest review verdict and Action line beside each PR, and open the full 
 
 ## Download for Mac
 
-[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.3.1/Review-Studio-1.3.1-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.3.1)
+[**Download Review Studio for Apple Silicon**](https://github.com/naveed-niazi/review-studio/releases/download/v1.3.2/Review-Studio-1.3.2-arm64.dmg) · [Release notes and checksums](https://github.com/naveed-niazi/review-studio/releases/tag/v1.3.2)
 
 Requires an Apple Silicon Mac (M-series), macOS 13 or newer, Git, GitHub CLI, and Claude Code. Node.js is bundled in the app; you do not need to install Node.js or clone this repository to use the download. Intel Macs, Windows, and Linux installers are not included.
 

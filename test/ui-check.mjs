@@ -46,6 +46,8 @@ try {
   await page.getByText('Analytics accompany feature changes', { exact: true }).click();
   await page.getByLabel('Parallel reviews').fill('3');
   await page.getByLabel('Inactivity timeout (minutes)').fill('4');
+  assert.equal(await page.getByLabel('Git download timeout (minutes)').inputValue(), '5');
+  await page.getByLabel('Git download timeout (minutes)').fill('3');
   await page.getByLabel('Failed review recheck (minutes)').fill('6');
   await page.getByLabel('Sync interval (minutes)').fill('11');
   await page.getByLabel('Age measured from').selectOption('commit');
@@ -56,6 +58,7 @@ try {
   assert.equal(state.settings.checks.analytics, true);
   assert.equal(state.settings.concurrency, 3);
   assert.equal(state.settings.stallMinutes, 4);
+  assert.equal(state.settings.gitFetchTimeoutMinutes, 3);
   assert.equal(state.settings.retryFailedMinutes, 6);
   assert.equal(state.settings.autoRetryFailed, true);
   assert.equal(state.settings.syncMinutes, 11);

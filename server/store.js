@@ -15,6 +15,7 @@ export const defaults = {
   model: 'sonnet',
   effort: 'medium',
   timeoutMinutes: 30,
+  gitFetchTimeoutMinutes: 5,
   stallMinutes: 5,
   autoRetryFailed: true,
   retryFailedMinutes: 5,

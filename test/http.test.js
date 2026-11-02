@@ -129,6 +129,7 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
       'Cached state should not wait for 1.5s GitHub commands',
     );
     assert.equal(state.settings.paused, true);
+    assert.equal(state.settings.gitFetchTimeoutMinutes, 5);
     assert.equal(
       (
         await fetch(app.url + '/api/settings', {
@@ -174,6 +175,7 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
           compatibility: true,
         },
         publishPolicy: 'automatic',
+        gitFetchTimeoutMinutes: 3,
       }),
     });
     assert.equal(update.status, 200);
@@ -181,6 +183,19 @@ if (!process.env.REVIEW_STUDIO_FIXTURE_ONLY)
     assert.equal(next.settings.checks.analytics, true);
     assert.equal(next.settings.checks.tests, false);
     assert.equal(next.settings.publishPolicy, 'automatic');
+    assert.equal(next.settings.gitFetchTimeoutMinutes, 3);
+    for (const value of [0, 6, 2.5, '5', null]) {
+      const invalid = await fetch(app.url + '/api/settings', {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ gitFetchTimeoutMinutes: value }),
+      });
+      assert.equal(invalid.status, 400);
+    }
+    assert.equal(
+      (await (await fetch(app.url + '/api/state')).json()).settings.gitFetchTimeoutMinutes,
+      3,
+    );
     assert.equal(
       (
         await fetch(app.url + '/api/settings', {

@@ -50,6 +50,9 @@ try {
   assert.equal(state.health.github.ok, true);
   assert.equal(state.health.claude.ok, true);
   await page.getByRole('button', { name: 'Settings & connections', exact: true }).click();
+  assert.equal(await page.getByLabel('Git download timeout (minutes)').inputValue(), '5');
+  await page.getByLabel('Git download timeout (minutes)').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(os.tmpdir(), 'review-studio-download-settings.png') });
   await page.getByText('Start Review Studio at login', { exact: true }).waitFor();
   await page
     .getByRole('heading', { name: 'Notifications & attention badge' })

@@ -234,6 +234,7 @@ app.patch(
       },
       effort: (v) => choice(v, ['low', 'medium', 'high', 'xhigh', 'max']),
       timeoutMinutes: (v) => integer(v, 1, 120),
+      gitFetchTimeoutMinutes: (v) => integer(v, 1, 5),
       stallMinutes: (v) => integer(v, 2, 30),
       autoRetryFailed: boolean,
       retryFailedMinutes: (v) => integer(v, 2, 120),
