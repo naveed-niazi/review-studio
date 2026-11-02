@@ -31,7 +31,13 @@ try {
   await page.getByRole('heading', { name: 'Welcome to Review Studio' }).waitFor({ timeout: 25000 });
   const origin = new URL(page.url()).origin;
   const prefs = await page.evaluate(() => window.reviewStudio.getPreferences());
-  assert.equal(prefs.openAtLogin, false);
+  // Login registration belongs to macOS and can already exist outside the isolated data folder.
+  assert.equal(
+    prefs.openAtLogin,
+    await app.evaluate(
+      ({ app }) => app.getLoginItemSettings({ args: ['--background'] }).openAtLogin,
+    ),
+  );
   assert.equal(prefs.keepRunning, true);
   assert.equal(prefs.notifications, true);
   assert.equal(prefs.attentionBadge, true);
